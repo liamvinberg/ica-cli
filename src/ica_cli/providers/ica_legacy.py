@@ -588,12 +588,152 @@ class IcaLegacyProvider(IcaProvider):
             "result": created,
         }
 
+    def _legacy_add_items(
+        self,
+        list_name: str,
+        item_names: list[str],
+        quantity: str | None = None,
+    ) -> dict[str, Any]:
+        auth_ticket = self.auth_ticket
+        if not auth_ticket:
+            raise ProviderError("Not authenticated")
+
+        lists = self._legacy_list_lists()
+        selected = next(
+            (item for item in lists if item.get("OfflineName") == list_name), None
+        )
+        if not selected:
+            raise ProviderError(
+                f"List '{list_name}' not found in legacy API response. Existing lists: "
+                + ", ".join(item.get("OfflineName", "?") for item in lists)
+            )
+
+        offline_id = selected.get("OfflineId")
+        if not offline_id:
+            raise ProviderError("Selected list has no OfflineId")
+
+        created_rows = [
+            {
+                "ProductName": item_name,
+                "SourceId": -1,
+                "ArticleGroupId": 12,
+                "Quantity": float(quantity) if quantity else 1.0,
+                "IsStrikedOver": False,
+            }
+            for item_name in item_names
+        ]
+        payload = {"CreatedRows": created_rows}
+        req = request.Request(
+            f"{self.base_url}/user/offlineshoppinglists/{parse.quote(str(offline_id))}/sync",
+            headers={
+                "AuthenticationTicket": auth_ticket,
+                "Content-Type": "application/json",
+            },
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+        )
+        try:
+            with request.urlopen(req, timeout=20) as response:
+                synced = json.loads(response.read().decode("utf-8"))
+        except error.HTTPError as http_error:
+            raise ProviderError(
+                f"Legacy add items failed: HTTP {http_error.code}"
+            ) from http_error
+
+        added = [{"item": item_name, "result": synced} for item_name in item_names]
+        return {
+            "list": list_name,
+            "count": len(added),
+            "added": added,
+            "errors": [],
+        }
+
+    def _fallback_add_items(
+        self,
+        list_name: str,
+        item_names: list[str],
+        quantity: str | None = None,
+    ) -> dict[str, Any]:
+        lists = self._fallback_get_lists()
+        selected = next((item for item in lists if item.get("name") == list_name), None)
+        if not selected:
+            raise ProviderError(
+                f"List '{list_name}' not found in fallback API response. Existing lists: "
+                + ", ".join(item.get("name", "?") for item in lists)
+            )
+
+        list_id = selected.get("id")
+        if not list_id:
+            raise ProviderError("Selected list has no id")
+
+        added: list[dict[str, Any]] = []
+        errors: list[dict[str, str]] = []
+
+        for item_name in item_names:
+            body_payload: dict[str, Any] = {"text": item_name, "isStriked": False}
+            if quantity:
+                body_payload["quantity"] = quantity
+
+            req = request.Request(
+                f"{self.digx_base_url}/shopping-list/v1/api/list/{parse.quote(str(list_id))}/row",
+                headers=self._fallback_auth_headers(),
+                data=json.dumps(body_payload).encode("utf-8"),
+                method="POST",
+            )
+            try:
+                with request.urlopen(req, timeout=20) as response:
+                    created = json.loads(response.read().decode("utf-8"))
+            except error.HTTPError as http_error:
+                if http_error.code == 401 and self.refresh_token:
+                    self.access_token = None
+                    req = request.Request(
+                        f"{self.digx_base_url}/shopping-list/v1/api/list/{parse.quote(str(list_id))}/row",
+                        headers=self._fallback_auth_headers(),
+                        data=json.dumps(body_payload).encode("utf-8"),
+                        method="POST",
+                    )
+                    with request.urlopen(req, timeout=20) as response:
+                        created = json.loads(response.read().decode("utf-8"))
+                else:
+                    errors.append(
+                        {
+                            "item": item_name,
+                            "error": f"Fallback add item failed: HTTP {http_error.code}",
+                        }
+                    )
+                    continue
+
+            added.append({"item": item_name, "result": created})
+
+        if len(added) == 0 and len(errors) > 0:
+            first = errors[0]
+            raise ProviderError(
+                f"Failed to add items to '{list_name}'. First error for '{first['item']}': {first['error']}"
+            )
+
+        return {
+            "list": list_name,
+            "count": len(added),
+            "added": added,
+            "errors": errors,
+        }
+
     def add_item(
         self, list_name: str, item_name: str, quantity: str | None = None
     ) -> dict[str, Any]:
         if self.auth_ticket:
             return self._legacy_add_item(list_name, item_name, quantity)
         return self._fallback_add_item(list_name, item_name, quantity)
+
+    def add_items(
+        self,
+        list_name: str,
+        item_names: list[str],
+        quantity: str | None = None,
+    ) -> dict[str, Any]:
+        if self.auth_ticket:
+            return self._legacy_add_items(list_name, item_names, quantity)
+        return self._fallback_add_items(list_name, item_names, quantity)
 
     def search_products(self, store_id: str, query: str) -> dict[str, Any]:
         url = (
@@ -726,5 +866,84 @@ class IcaLegacyProvider(IcaProvider):
         return {
             "query": phrase,
             "store_ids": [str(item).strip() for item in ids_raw if str(item).strip()],
+            "stores": stores,
+        }
+
+    def get_store(self, store_id: str) -> dict[str, Any]:
+        auth_ticket = self.auth_ticket
+        if not auth_ticket:
+            raise ProviderError(
+                "Store lookup requires legacy AuthenticationTicket. "
+                "Run legacy login first: ica config set-provider ica-legacy && ica auth login"
+            )
+
+        trimmed = store_id.strip()
+        if not trimmed:
+            raise ProviderError("Store id cannot be empty")
+
+        req = request.Request(
+            f"{self.base_url}/stores/{parse.quote(trimmed)}",
+            headers={"AuthenticationTicket": auth_ticket},
+            method="GET",
+        )
+        try:
+            with request.urlopen(req, timeout=20) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except error.HTTPError as http_error:
+            body = http_error.read().decode("utf-8", errors="replace")
+            raise ProviderError(
+                f"Store fetch failed for id '{trimmed}': HTTP {http_error.code}: {body}"
+            ) from http_error
+        except error.URLError as url_error:
+            raise ProviderError(
+                f"Store fetch failed for id '{trimmed}': {url_error.reason}"
+            ) from url_error
+
+        if not isinstance(payload, dict):
+            raise ProviderError("Unexpected legacy store response format")
+        return payload
+
+    def list_favorite_stores(self) -> dict[str, Any]:
+        auth_ticket = self.auth_ticket
+        if not auth_ticket:
+            raise ProviderError(
+                "Favorite stores require legacy AuthenticationTicket. "
+                "Run legacy login first: ica config set-provider ica-legacy && ica auth login"
+            )
+
+        req = request.Request(
+            f"{self.base_url}/user/stores",
+            headers={"AuthenticationTicket": auth_ticket},
+            method="GET",
+        )
+        try:
+            with request.urlopen(req, timeout=20) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except error.HTTPError as http_error:
+            body = http_error.read().decode("utf-8", errors="replace")
+            raise ProviderError(
+                f"Favorite stores fetch failed: HTTP {http_error.code}: {body}"
+            ) from http_error
+        except error.URLError as url_error:
+            raise ProviderError(
+                f"Favorite stores fetch failed: {url_error.reason}"
+            ) from url_error
+
+        ids: list[str] = []
+        if isinstance(payload, dict):
+            raw_ids = payload.get("FavoriteStores")
+            if isinstance(raw_ids, list):
+                ids = [str(item).strip() for item in raw_ids if str(item).strip()]
+
+        stores: list[dict[str, Any]] = []
+        for store_id in ids:
+            try:
+                detail = self.get_store(store_id)
+            except ProviderError:
+                continue
+            stores.append(detail)
+
+        return {
+            "store_ids": ids,
             "stores": stores,
         }

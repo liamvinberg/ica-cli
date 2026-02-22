@@ -4,6 +4,7 @@ from ica_cli.cli import (
     _extract_raw_payload,
     _format_human,
     _parse_callback_url,
+    _resolve_list_add_items,
     build_parser,
 )
 
@@ -14,8 +15,52 @@ class CliParserTests(unittest.TestCase):
         args = parser.parse_args(["list", "add", "mjolk", "--list-name", "Min lista"])
         self.assertEqual(args.command, "list")
         self.assertEqual(args.list_cmd, "add")
-        self.assertEqual(args.item, "mjolk")
+        self.assertEqual(args.items, ["mjolk"])
         self.assertEqual(args.list_name, "Min lista")
+
+    def test_parser_accepts_config_set_store_ids(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["config", "set-store-ids", "1001", "1002", "1003"])
+        self.assertEqual(args.command, "config")
+        self.assertEqual(args.config_cmd, "set-store-ids")
+        self.assertEqual(args.store_ids, ["1001", "1002", "1003"])
+
+    def test_parser_accepts_list_add_multiple_styles(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "list",
+                "add",
+                "mjolk",
+                "brod",
+                "--item",
+                "smor",
+                "--items",
+                "aggg, ost",
+                "--dedupe",
+            ]
+        )
+        self.assertEqual(args.items, ["mjolk", "brod"])
+        self.assertEqual(args.extra_items, ["smor"])
+        self.assertEqual(args.items_csv, ["aggg, ost"])
+        self.assertTrue(args.dedupe)
+
+    def test_resolve_list_add_items_dedupes_case_insensitive(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "list",
+                "add",
+                "mjolk",
+                "MJOLK",
+                "--item",
+                "brod",
+                "--items",
+                "brod, ost",
+                "--dedupe",
+            ]
+        )
+        self.assertEqual(_resolve_list_add_items(args), ["mjolk", "brod", "ost"])
 
     def test_parser_accepts_list_items(self) -> None:
         parser = build_parser()
@@ -23,6 +68,11 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.command, "list")
         self.assertEqual(args.list_cmd, "items")
         self.assertEqual(args.list_name, "Min lista")
+
+    def test_parser_accepts_list_alias_for_list_name(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["list", "add", "mjolk", "--list", "Handla"])
+        self.assertEqual(args.list_name, "Handla")
 
     def test_parser_accepts_auth_session_import(self) -> None:
         parser = build_parser()
@@ -64,6 +114,19 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.command, "stores")
         self.assertEqual(args.stores_cmd, "search")
         self.assertEqual(args.query, "stockholm")
+
+    def test_parser_accepts_stores_get(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["stores", "get", "1004394"])
+        self.assertEqual(args.command, "stores")
+        self.assertEqual(args.stores_cmd, "get")
+        self.assertEqual(args.store_id, "1004394")
+
+    def test_parser_accepts_stores_favorites(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["stores", "favorites"])
+        self.assertEqual(args.command, "stores")
+        self.assertEqual(args.stores_cmd, "favorites")
 
     def test_parser_accepts_auth_login_current(self) -> None:
         parser = build_parser()
@@ -193,6 +256,25 @@ class CliParserTests(unittest.TestCase):
         text = _format_human(payload, args)
         self.assertEqual(text, 'Added "mjolk" to "Min lista".')
 
+    def test_human_format_list_add_bulk(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            ["list", "add", "mjolk", "brod", "--list-name", "Min lista"]
+        )
+        payload = {
+            "list": "Min lista",
+            "count": 2,
+            "added": [
+                {"item": "mjolk", "result": {"id": "r1"}},
+                {"item": "brod", "result": {"id": "r2"}},
+            ],
+            "errors": [],
+        }
+        text = _format_human(payload, args)
+        self.assertIn('Added 2 items to "Min lista"', text)
+        self.assertIn('"mjolk"', text)
+        self.assertIn('"brod"', text)
+
     def test_human_format_list_ls(self) -> None:
         parser = build_parser()
         args = parser.parse_args(["list", "ls"])
@@ -269,6 +351,76 @@ class CliParserTests(unittest.TestCase):
         self.assertIn('Stores for "stockholm" (2):', text)
         self.assertIn("- ICA Supermarket Kupolen (id: 658, city: BORLANGE)", text)
         self.assertIn("- ICA Nara Gagnefhallen (id: 603, city: GAGNEF)", text)
+
+    def test_human_format_stores_current_shape(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["stores", "search", "stockholm"])
+        payload = {
+            "provider": "ica-current",
+            "query": "stockholm",
+            "result": {
+                "stores": [
+                    {
+                        "id": 1004394,
+                        "marketingName": "ICA Kvantum Kungens Kurva",
+                        "address": {"city": "NORSBORG"},
+                    }
+                ]
+            },
+        }
+        text = _format_human(payload, args)
+        self.assertIn('Stores for "stockholm" (1):', text)
+        self.assertIn(
+            "- ICA Kvantum Kungens Kurva (id: 1004394, city: NORSBORG)",
+            text,
+        )
+
+    def test_human_format_stores_favorites(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["stores", "favorites"])
+        payload = {
+            "provider": "ica-current",
+            "stores_cmd": "favorites",
+            "result": {
+                "stores": [
+                    {
+                        "id": 1004394,
+                        "marketingName": "ICA Kvantum Kungens Kurva",
+                        "address": {"city": "NORSBORG"},
+                    }
+                ]
+            },
+        }
+        text = _format_human(payload, args)
+        self.assertIn("Favorite stores (1):", text)
+        self.assertIn(
+            "- ICA Kvantum Kungens Kurva (id: 1004394, city: NORSBORG)",
+            text,
+        )
+
+    def test_human_format_stores_get(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["stores", "get", "1004394"])
+        payload = {
+            "provider": "ica-current",
+            "stores_cmd": "get",
+            "store_id": "1004394",
+            "result": {
+                "stores": [
+                    {
+                        "id": 1004394,
+                        "marketingName": "ICA Kvantum Kungens Kurva",
+                        "address": {"city": "NORSBORG"},
+                    }
+                ]
+            },
+        }
+        text = _format_human(payload, args)
+        self.assertIn("Store details:", text)
+        self.assertIn(
+            "- ICA Kvantum Kungens Kurva (id: 1004394, city: NORSBORG)",
+            text,
+        )
 
 
 if __name__ == "__main__":

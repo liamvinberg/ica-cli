@@ -123,7 +123,19 @@ printf '%s' "$ICA_PASSWORD" | uv run ica auth login --password-stdin
 uv run ica config set-default-list "Min lista"
 uv run ica --json list add "mjolk"
 uv run ica --json list add "bananer" --list-name "Helg" --quantity 2
+uv run ica --json list add "mjolk" "brod" "smor" --list "Handla"
+uv run ica --json list add --item "oat milk" --item "agg" --list "Handla"
+uv run ica --json list add --items "mjolk,brod,smor" --list "Handla" --dedupe
+printf 'mjolk\nbrod\nsmor\n' | uv run ica --json list add --stdin-items --list "Handla"
 ```
+
+`list add` supports mixed bulk input in one call:
+
+- Positional items: `ica list add mjolk brod smor`
+- Repeated `--item`: `ica list add --item mjolk --item brod`
+- Comma-separated groups with `--items`
+- Newline-separated stdin with `--stdin-items`
+- `--dedupe` removes duplicate input items case-insensitively before adding
 
 ## List items in a grocery list
 
@@ -137,8 +149,12 @@ uv run ica --raw list items --list-name "Min lista"
 
 ```bash
 uv run ica config set-store-id "1004394"
+uv run ica config set-store-ids "1004394" "1001234" "1007777"
 uv run ica --json products search "ost"
 ```
+
+If multiple preferred stores are configured, the first one is used as default
+for commands that require one store ID.
 
 ## Search deals/offers
 
@@ -155,15 +171,25 @@ uv run ica --raw deals search "kaffe" --store-id "1004394"
 
 ## Search stores by name
 
-Store search uses legacy ICA endpoints and returns store names with IDs so you can
-pick a store ID without manual lookup.
+Store search now tries current auth first and then legacy fallback when available,
+returning store names with IDs so you can pick a store without manual lookup.
 
 ```bash
 uv run ica config set-provider ica-legacy
 uv run ica auth login
 uv run ica stores search "stockholm"
+uv run ica stores favorites
+uv run ica stores get "1004394"
 uv run ica --json stores search "stockholm"
 uv run ica --raw stores search "stockholm"
+```
+
+If current search cannot resolve stores and fallback is unavailable, do one legacy
+login once:
+
+```bash
+uv run ica config set-provider ica-legacy
+uv run ica auth login
 ```
 
 ## Secrets and storage

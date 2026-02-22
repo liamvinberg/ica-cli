@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import tempfile
 import unittest
+import json
 from pathlib import Path
 from unittest import mock
 
@@ -83,3 +84,33 @@ class TestConfigSecretStorage(unittest.TestCase):
             secret = config.keychain_get("legacy-refresh-token:test-user")
 
         self.assertIsNone(secret)
+
+    def test_load_config_migrates_single_store_id_to_store_ids(self) -> None:
+        config.CONFIG_PATH.write_text(
+            json.dumps(
+                {
+                    "provider": "ica-current",
+                    "username": "199001010000",
+                    "store_id": "1004394",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        loaded = config.load_config()
+        self.assertEqual(loaded.store_id, "1004394")
+        self.assertEqual(loaded.store_ids, ["1004394"])
+
+    def test_save_config_persists_store_ids(self) -> None:
+        to_save = config.AppConfig(
+            provider="ica-current",
+            username="199001010000",
+            default_list_name="Min lista",
+            store_id="1004394",
+            store_ids=["1004394", "1001234"],
+        )
+        config.save_config(to_save)
+
+        payload = json.loads(config.CONFIG_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(payload["store_id"], "1004394")
+        self.assertEqual(payload["store_ids"], ["1004394", "1001234"])

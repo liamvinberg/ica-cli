@@ -35,7 +35,9 @@ def build_provider(config: AppConfig) -> IcaProvider:
         )
 
     if config.provider == "ica-legacy":
-        auth_ticket = keychain_get(f"legacy-auth-ticket:{username}")
+        auth_ticket = os.getenv("ICA_LEGACY_AUTH_TICKET") or keychain_get(
+            f"legacy-auth-ticket:{username}"
+        )
         access_token = os.getenv("ICA_LEGACY_ACCESS_TOKEN") or keychain_get(
             f"legacy-access-token:{username}"
         )

@@ -5,6 +5,7 @@ import base64
 import getpass
 import hashlib
 import json
+import os
 import re
 import secrets
 import sys
@@ -196,6 +197,58 @@ def _find_list_by_name(
     return None
 
 
+def _split_csv_items(raw: str) -> list[str]:
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _resolve_list_add_items(args: argparse.Namespace) -> list[str]:
+    items: list[str] = []
+
+    positional_items = getattr(args, "items", [])
+    if isinstance(positional_items, list):
+        items.extend(
+            item.strip()
+            for item in positional_items
+            if isinstance(item, str) and item.strip()
+        )
+
+    extra_items = getattr(args, "extra_items", None)
+    if isinstance(extra_items, list):
+        items.extend(
+            item.strip()
+            for item in extra_items
+            if isinstance(item, str) and item.strip()
+        )
+
+    csv_groups = getattr(args, "items_csv", None)
+    if isinstance(csv_groups, list):
+        for group in csv_groups:
+            if isinstance(group, str) and group.strip():
+                items.extend(_split_csv_items(group))
+
+    if getattr(args, "stdin_items", False):
+        stdin_items = [line.strip() for line in sys.stdin.read().splitlines()]
+        items.extend(item for item in stdin_items if item)
+
+    if getattr(args, "dedupe", False):
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            lowered = item.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            deduped.append(item)
+        items = deduped
+
+    if not items:
+        raise ProviderError(
+            "No items provided. Use positional items, --item, --items, or --stdin-items."
+        )
+
+    return items
+
+
 def _format_human(payload: object, args: argparse.Namespace) -> str:
     command = getattr(args, "command", None)
     if isinstance(payload, str):
@@ -211,6 +264,13 @@ def _format_human(payload: object, args: argparse.Namespace) -> str:
                 f"- default_list_name: {payload.get('default_list_name') or '-'}"
             )
             lines.append(f"- store_id: {payload.get('store_id') or '-'}")
+            store_ids = payload.get("store_ids")
+            if isinstance(store_ids, list) and len(store_ids) > 0:
+                lines.append(
+                    f"- store_ids: {', '.join(str(item) for item in store_ids)}"
+                )
+            else:
+                lines.append("- store_ids: -")
             return "\n".join(lines)
 
         updates = [
@@ -287,6 +347,33 @@ def _format_human(payload: object, args: argparse.Namespace) -> str:
             if isinstance(list_name, str) and isinstance(item_name, str):
                 return f'Added "{item_name}" to "{list_name}".'
 
+            added = payload.get("added")
+            count = payload.get("count")
+            if (
+                isinstance(list_name, str)
+                and isinstance(added, list)
+                and isinstance(count, int)
+            ):
+                errors = payload.get("errors")
+                item_names: list[str] = []
+                for entry in added:
+                    if not isinstance(entry, dict):
+                        continue
+                    value = entry.get("item")
+                    if isinstance(value, str) and value:
+                        item_names.append(value)
+                if len(item_names) == 0:
+                    return f'Added {count} items to "{list_name}".'
+                preview = ", ".join(f'"{name}"' for name in item_names[:8])
+                if len(item_names) > 8:
+                    preview += f", and {len(item_names) - 8} more"
+                if isinstance(errors, list) and len(errors) > 0:
+                    return (
+                        f'Added {count} items to "{list_name}": {preview}. '
+                        f"Failed: {len(errors)} items. Use --json for details."
+                    )
+                return f'Added {count} items to "{list_name}": {preview}.'
+
         if list_cmd == "items":
             list_name = payload.get("list")
             items = payload.get("items")
@@ -361,17 +448,33 @@ def _format_human(payload: object, args: argparse.Namespace) -> str:
     if command == "stores" and isinstance(payload, dict):
         result = payload.get("result")
         query = payload.get("query", "")
+        stores_cmd = payload.get("stores_cmd")
         if isinstance(result, dict):
             stores = result.get("stores")
             if isinstance(stores, list):
                 if len(stores) == 0:
+                    if stores_cmd == "favorites":
+                        return "No favorite stores found."
+                    if stores_cmd == "get":
+                        return "Store not found."
                     return f'No stores found for "{query}".'
-                lines = [f'Stores for "{query}" ({len(stores)}):']
+
+                if stores_cmd == "favorites":
+                    lines = [f"Favorite stores ({len(stores)}):"]
+                elif stores_cmd == "get":
+                    lines = ["Store details:"]
+                else:
+                    lines = [f'Stores for "{query}" ({len(stores)}):']
                 for store in stores[:20]:
                     if not isinstance(store, dict):
                         continue
                     store_id = store.get("Id")
+                    if store_id is None:
+                        store_id = store.get("id")
+
                     name = store.get("MarketingName")
+                    if not isinstance(name, str) or not name:
+                        name = store.get("marketingName")
                     if not isinstance(name, str) or not name:
                         name = store.get("StoreName")
                     if not isinstance(name, str) or not name:
@@ -379,8 +482,12 @@ def _format_human(payload: object, args: argparse.Namespace) -> str:
 
                     city = None
                     address = store.get("Address")
+                    if not isinstance(address, dict):
+                        address = store.get("address")
                     if isinstance(address, dict):
                         address_city = address.get("City")
+                        if not isinstance(address_city, str) or not address_city:
+                            address_city = address.get("city")
                         if isinstance(address_city, str) and address_city:
                             city = address_city
 
@@ -482,6 +589,31 @@ def _store_legacy_auth(
         keychain_set(_kc_legacy_oauth_client_id(username), oauth_client_id)
     if oauth_client_secret:
         keychain_set(_kc_legacy_oauth_client_secret(username), oauth_client_secret)
+
+
+def _build_legacy_provider_for_username(username: str) -> IcaLegacyProvider:
+    return IcaLegacyProvider(
+        auth_ticket=(
+            os.getenv("ICA_LEGACY_AUTH_TICKET")
+            or keychain_get(_kc_legacy_auth_ticket(username))
+        ),
+        access_token=(
+            os.getenv("ICA_LEGACY_ACCESS_TOKEN")
+            or keychain_get(_kc_legacy_access(username))
+        ),
+        refresh_token=(
+            os.getenv("ICA_LEGACY_REFRESH_TOKEN")
+            or keychain_get(_kc_legacy_refresh(username))
+        ),
+        oauth_client_id=(
+            os.getenv("ICA_LEGACY_OAUTH_CLIENT_ID")
+            or keychain_get(_kc_legacy_oauth_client_id(username))
+        ),
+        oauth_client_secret=(
+            os.getenv("ICA_LEGACY_OAUTH_CLIENT_SECRET")
+            or keychain_get(_kc_legacy_oauth_client_secret(username))
+        ),
+    )
 
 
 def _ensure_current_provider(config: AppConfig) -> None:
@@ -597,13 +729,50 @@ def cmd_config_show(_: argparse.Namespace, config: AppConfig) -> object:
         "username": config.username,
         "default_list_name": config.default_list_name,
         "store_id": config.store_id,
+        "store_ids": config.store_ids,
     }
 
 
 def cmd_config_set_store_id(args: argparse.Namespace, config: AppConfig) -> object:
     config.store_id = args.store_id
+    config.store_ids = [args.store_id]
     save_config(config)
-    return {"ok": True, "store_id": config.store_id}
+    return {"ok": True, "store_id": config.store_id, "store_ids": config.store_ids}
+
+
+def cmd_config_set_store_ids(args: argparse.Namespace, config: AppConfig) -> object:
+    normalized = [item.strip() for item in args.store_ids if item.strip()]
+    if len(normalized) == 0:
+        raise ProviderError("No store ids provided")
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in normalized:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+
+    config.store_ids = deduped
+    config.store_id = deduped[0]
+    save_config(config)
+    return {
+        "ok": True,
+        "store_id": config.store_id,
+        "store_ids": config.store_ids,
+    }
+
+
+def _resolve_store_id(args: argparse.Namespace, config: AppConfig) -> str | None:
+    if isinstance(getattr(args, "store_id", None), str) and args.store_id:
+        return args.store_id
+
+    if isinstance(config.store_ids, list) and len(config.store_ids) > 0:
+        first = str(config.store_ids[0]).strip()
+        if first:
+            return first
+
+    return config.store_id
 
 
 def cmd_auth_login(args: argparse.Namespace, config: AppConfig) -> object:
@@ -927,8 +1096,19 @@ def cmd_list_add(args: argparse.Namespace, config: AppConfig) -> object:
         raise ProviderError(
             "No list name provided. Use --list-name or set default with: ica config set-default-list <name>"
         )
-    return provider.add_item(
-        list_name=list_name, item_name=args.item, quantity=args.quantity
+
+    item_names = _resolve_list_add_items(args)
+    if len(item_names) == 1:
+        return provider.add_item(
+            list_name=list_name,
+            item_name=item_names[0],
+            quantity=args.quantity,
+        )
+
+    return provider.add_items(
+        list_name=list_name,
+        item_names=item_names,
+        quantity=args.quantity,
     )
 
 
@@ -966,10 +1146,11 @@ def cmd_list_items(args: argparse.Namespace, config: AppConfig) -> object:
 
 def cmd_products_search(args: argparse.Namespace, config: AppConfig) -> object:
     provider = build_provider(config)
-    store_id = args.store_id or config.store_id
+    store_id = _resolve_store_id(args, config)
     if not store_id:
         raise ProviderError(
-            "No store id provided. Use --store-id or set default with: ica config set-store-id <id>"
+            "No store id provided. Use --store-id or set defaults with: "
+            "ica config set-store-id <id> or ica config set-store-ids <id1> <id2>"
         )
     result = provider.search_products(store_id=store_id, query=args.query)
     return {
@@ -982,10 +1163,11 @@ def cmd_products_search(args: argparse.Namespace, config: AppConfig) -> object:
 
 def cmd_deals_search(args: argparse.Namespace, config: AppConfig) -> object:
     provider = build_provider(config)
-    store_id = args.store_id or config.store_id
+    store_id = _resolve_store_id(args, config)
     if not store_id:
         raise ProviderError(
-            "No store id provided. Use --store-id or set default with: ica config set-store-id <id>"
+            "No store id provided. Use --store-id or set defaults with: "
+            "ica config set-store-id <id> or ica config set-store-ids <id1> <id2>"
         )
     result = provider.search_deals(store_id=store_id, query=args.query)
     return {
@@ -998,10 +1180,107 @@ def cmd_deals_search(args: argparse.Namespace, config: AppConfig) -> object:
 
 def cmd_stores_search(args: argparse.Namespace, config: AppConfig) -> object:
     provider = build_provider(config)
-    result = provider.search_stores(query=args.query)
+    try:
+        result = provider.search_stores(query=args.query)
+        return {
+            "provider": config.provider,
+            "query": args.query,
+            "result": result,
+        }
+    except ProviderError as primary_error:
+        if config.provider != "ica-current":
+            raise
+
+        username = _require_username(config)
+        legacy_provider = _build_legacy_provider_for_username(username)
+        try:
+            result = legacy_provider.search_stores(query=args.query)
+            return {
+                "provider": "ica-legacy",
+                "fallback_from": "ica-current",
+                "query": args.query,
+                "result": result,
+            }
+        except ProviderError as fallback_error:
+            if "requires legacy AuthenticationTicket" in str(fallback_error):
+                if sys.stdin.isatty():
+                    password = getpass.getpass(
+                        "ICA password (needed once for store-search fallback): "
+                    )
+                    if password:
+                        login_result = legacy_provider.login(
+                            username=username,
+                            password=password,
+                        )
+                        method = login_result.get("method")
+                        auth_ticket = login_result.get("auth_ticket")
+                        access_token = login_result.get("access_token")
+                        refresh_token = login_result.get("refresh_token")
+                        oauth_client_id = login_result.get("oauth_client_id")
+                        oauth_client_secret = login_result.get("oauth_client_secret")
+
+                        if isinstance(auth_ticket, str) and auth_ticket:
+                            _store_legacy_auth(
+                                username=username, auth_ticket=auth_ticket
+                            )
+
+                        if isinstance(access_token, str) and access_token:
+                            _store_legacy_auth(
+                                username=username,
+                                access_token=access_token,
+                                refresh_token=(
+                                    refresh_token
+                                    if isinstance(refresh_token, str)
+                                    else None
+                                ),
+                                oauth_client_id=(
+                                    oauth_client_id
+                                    if isinstance(oauth_client_id, str)
+                                    else None
+                                ),
+                                oauth_client_secret=(
+                                    oauth_client_secret
+                                    if isinstance(oauth_client_secret, str)
+                                    else None
+                                ),
+                            )
+
+                        refreshed_legacy = _build_legacy_provider_for_username(username)
+                        result = refreshed_legacy.search_stores(query=args.query)
+                        return {
+                            "provider": "ica-legacy",
+                            "fallback_from": "ica-current",
+                            "bootstrap_method": method,
+                            "query": args.query,
+                            "result": result,
+                        }
+
+            raise ProviderError(
+                "Store search is unavailable with current provider auth only. "
+                "Automatic legacy fallback also failed. "
+                f"Current provider error: {primary_error}. "
+                f"Legacy fallback error: {fallback_error}. "
+                "Fix by running once: ica config set-provider ica-legacy && ica auth login"
+            ) from fallback_error
+
+
+def cmd_stores_get(args: argparse.Namespace, config: AppConfig) -> object:
+    provider = build_provider(config)
+    result = provider.get_store(args.store_id)
     return {
         "provider": config.provider,
-        "query": args.query,
+        "stores_cmd": "get",
+        "store_id": args.store_id,
+        "result": {"stores": [result]},
+    }
+
+
+def cmd_stores_favorites(_: argparse.Namespace, config: AppConfig) -> object:
+    provider = build_provider(config)
+    result = provider.list_favorite_stores()
+    return {
+        "provider": config.provider,
+        "stores_cmd": "favorites",
         "result": result,
     }
 
@@ -1042,6 +1321,10 @@ def build_parser() -> argparse.ArgumentParser:
     config_set_store_id = config_sub.add_parser("set-store-id")
     config_set_store_id.add_argument("store_id")
     config_set_store_id.set_defaults(handler=cmd_config_set_store_id)
+
+    config_set_store_ids = config_sub.add_parser("set-store-ids")
+    config_set_store_ids.add_argument("store_ids", nargs="+")
+    config_set_store_ids.set_defaults(handler=cmd_config_set_store_ids)
 
     config_show = config_sub.add_parser("show")
     config_show.set_defaults(handler=cmd_config_show)
@@ -1107,13 +1390,30 @@ def build_parser() -> argparse.ArgumentParser:
     list_ls.set_defaults(handler=cmd_list_ls)
 
     list_add = list_sub.add_parser("add")
-    list_add.add_argument("item")
-    list_add.add_argument("--list-name")
+    list_add.add_argument("items", nargs="*")
+    list_add.add_argument("--item", dest="extra_items", action="append")
+    list_add.add_argument(
+        "--items",
+        dest="items_csv",
+        action="append",
+        help="Comma-separated items. Can be passed multiple times.",
+    )
+    list_add.add_argument(
+        "--stdin-items",
+        action="store_true",
+        help="Read newline-separated items from stdin.",
+    )
+    list_add.add_argument(
+        "--dedupe",
+        action="store_true",
+        help="Remove duplicate input items (case-insensitive) before adding.",
+    )
+    list_add.add_argument("--list-name", "--list", dest="list_name")
     list_add.add_argument("--quantity")
     list_add.set_defaults(handler=cmd_list_add)
 
     list_items = list_sub.add_parser("items")
-    list_items.add_argument("--list-name")
+    list_items.add_argument("--list-name", "--list", dest="list_name")
     list_items.set_defaults(handler=cmd_list_items)
 
     products_parser = subparsers.add_parser("products")
@@ -1135,6 +1435,11 @@ def build_parser() -> argparse.ArgumentParser:
     stores_search = stores_sub.add_parser("search")
     stores_search.add_argument("query")
     stores_search.set_defaults(handler=cmd_stores_search)
+    stores_get = stores_sub.add_parser("get")
+    stores_get.add_argument("store_id")
+    stores_get.set_defaults(handler=cmd_stores_get)
+    stores_favorites = stores_sub.add_parser("favorites")
+    stores_favorites.set_defaults(handler=cmd_stores_favorites)
 
     return parser
 

@@ -15,6 +15,7 @@
     "list_all": "ica --json list ls",
     "list_items": "ica --json list items --list-name \"{{list_name}}\"",
     "add_item": "ica --json list add \"{{item}}\" --list-name \"{{list_name}}\"",
+    "add_items_bulk": "ica --json list add --items \"{{items_csv}}\" --list \"{{list_name}}\" --dedupe",
     "search_products": "ica --json products search \"{{query}}\" --store-id \"{{store_id}}\""
   }
 }

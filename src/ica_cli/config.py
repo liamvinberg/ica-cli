@@ -23,6 +23,7 @@ class AppConfig:
     username: str | None = None
     default_list_name: str | None = None
     store_id: str | None = None
+    store_ids: list[str] | None = None
 
 
 def ensure_app_dir() -> None:
@@ -38,11 +39,26 @@ def load_config() -> AppConfig:
     except json.JSONDecodeError as error:
         raise ConfigError(f"Invalid JSON in {CONFIG_PATH}: {error}") from error
 
+    store_ids_raw = payload.get("store_ids")
+    store_ids: list[str] | None = None
+    if isinstance(store_ids_raw, list):
+        parsed = [str(item).strip() for item in store_ids_raw if str(item).strip()]
+        store_ids = parsed if parsed else None
+
+    legacy_store_id = payload.get("store_id")
+    if (
+        store_ids is None
+        and isinstance(legacy_store_id, str)
+        and legacy_store_id.strip()
+    ):
+        store_ids = [legacy_store_id.strip()]
+
     return AppConfig(
         provider=payload.get("provider", "ica-current"),
         username=payload.get("username"),
         default_list_name=payload.get("default_list_name"),
-        store_id=payload.get("store_id"),
+        store_id=legacy_store_id,
+        store_ids=store_ids,
     )
 
 
@@ -55,6 +71,7 @@ def save_config(config: AppConfig) -> None:
                 "username": config.username,
                 "default_list_name": config.default_list_name,
                 "store_id": config.store_id,
+                "store_ids": config.store_ids,
             },
             indent=2,
             sort_keys=True,

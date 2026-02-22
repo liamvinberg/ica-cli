@@ -325,6 +325,75 @@ class IcaCurrentProvider(IcaProvider):
             "result": created,
         }
 
+    def add_items(
+        self,
+        list_name: str,
+        item_names: list[str],
+        quantity: str | None = None,
+    ) -> dict[str, Any]:
+        lists = self.list_lists()
+        selected = next((item for item in lists if item.get("name") == list_name), None)
+        if not selected:
+            raise ProviderError(
+                f"List '{list_name}' not found in current API response. Existing lists: "
+                + ", ".join(item.get("name", "?") for item in lists)
+            )
+
+        list_id = selected.get("id")
+        if not list_id:
+            raise ProviderError("Selected list has no id")
+
+        added: list[dict[str, Any]] = []
+        errors: list[dict[str, str]] = []
+
+        for item_name in item_names:
+            body_payload: dict[str, Any] = {
+                "text": item_name,
+                "isStriked": False,
+            }
+            if quantity:
+                body_payload["quantity"] = quantity
+
+            req = request.Request(
+                f"{self.base_url}/shopping-list/v1/api/list/{parse.quote(str(list_id))}/row",
+                headers=self._auth_headers(),
+                data=json.dumps(body_payload).encode("utf-8"),
+                method="POST",
+            )
+            created = self._request_json(req)
+            if created is None:
+                req = request.Request(
+                    f"{self.base_url}/shopping-list/v1/api/list/{parse.quote(str(list_id))}/row",
+                    headers=self._auth_headers(),
+                    data=json.dumps(body_payload).encode("utf-8"),
+                    method="POST",
+                )
+                created = self._request_json(req)
+
+            if created is None:
+                errors.append(
+                    {
+                        "item": item_name,
+                        "error": "Current API add item failed after retry",
+                    }
+                )
+                continue
+
+            added.append({"item": item_name, "result": created})
+
+        if len(added) == 0 and len(errors) > 0:
+            first = errors[0]
+            raise ProviderError(
+                f"Failed to add items to '{list_name}'. First error for '{first['item']}': {first['error']}"
+            )
+
+        return {
+            "list": list_name,
+            "count": len(added),
+            "added": added,
+            "errors": errors,
+        }
+
     def search_products(self, store_id: str, query: str) -> dict[str, Any]:
         url = (
             f"{self.catalog_url}/stores/{parse.quote(store_id)}/api/v5/products/search"
@@ -356,7 +425,183 @@ class IcaCurrentProvider(IcaProvider):
         )
 
     def search_stores(self, query: str) -> dict[str, Any]:
-        raise ProviderError(
-            "Store search endpoint is mapped for ica-legacy only. "
-            "Use provider ica-legacy: ica config set-provider ica-legacy"
+        phrase = query.strip()
+        if not phrase:
+            raise ProviderError("Store search query cannot be empty")
+
+        token = self.refresh_access_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        }
+
+        ids: list[str] = []
+        search_error: str | None = None
+
+        search_req = request.Request(
+            f"https://apimgw-pub.ica.se/stores/search?Filters&Phrase={parse.quote(phrase)}",
+            headers=headers,
+            method="GET",
         )
+        try:
+            with request.urlopen(search_req, timeout=20) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            if isinstance(payload, dict):
+                raw_ids = payload.get("Stores")
+                if isinstance(raw_ids, list):
+                    ids = [str(item).strip() for item in raw_ids if str(item).strip()]
+        except (error.HTTPError, error.URLError) as endpoint_error:
+            search_error = str(endpoint_error)
+
+        stores = self._hydrate_stores_by_ids(ids, headers)
+        if len(stores) > 0:
+            return {
+                "query": phrase,
+                "source": "current-store-search",
+                "store_ids": ids,
+                "stores": stores,
+            }
+
+        favorites_ids: list[str] = []
+        favorites_req = request.Request(
+            "https://apimgw-pub.ica.se/sverige/digx/mobile/storeservice/v1/favorites",
+            headers=headers,
+            method="GET",
+        )
+        try:
+            with request.urlopen(favorites_req, timeout=20) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            if isinstance(payload, dict):
+                raw_favorites = payload.get("favoriteStores")
+                if isinstance(raw_favorites, list):
+                    favorites_ids = [
+                        str(item).strip() for item in raw_favorites if str(item).strip()
+                    ]
+        except (error.HTTPError, error.URLError):
+            favorites_ids = []
+
+        favorites = self._hydrate_stores_by_ids(favorites_ids, headers)
+        needle = phrase.lower()
+        filtered = [
+            store
+            for store in favorites
+            if needle
+            in " ".join(
+                [
+                    str(store.get("marketingName", "")),
+                    str((store.get("address") or {}).get("city", ""))
+                    if isinstance(store.get("address"), dict)
+                    else "",
+                    str((store.get("address") or {}).get("street", ""))
+                    if isinstance(store.get("address"), dict)
+                    else "",
+                ]
+            ).lower()
+        ]
+        if len(filtered) > 0:
+            return {
+                "query": phrase,
+                "source": "current-favorites-filter",
+                "store_ids": [
+                    str(item.get("id"))
+                    for item in filtered
+                    if isinstance(item.get("id"), (int, str))
+                ],
+                "stores": filtered,
+            }
+
+        if search_error:
+            raise ProviderError(
+                "Current provider store discovery could not find matches. "
+                f"Current store-search endpoint error: {search_error}"
+            )
+
+        raise ProviderError("Current provider store discovery returned no matches")
+
+    def _hydrate_stores_by_ids(
+        self,
+        store_ids: list[str],
+        headers: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        stores: list[dict[str, Any]] = []
+        for store_id in store_ids:
+            req = request.Request(
+                f"https://apimgw-pub.ica.se/sverige/digx/mobile/storeservice/v1/stores/{parse.quote(store_id)}",
+                headers=headers,
+                method="GET",
+            )
+            try:
+                with request.urlopen(req, timeout=20) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            except (error.HTTPError, error.URLError):
+                continue
+            if isinstance(payload, dict):
+                stores.append(payload)
+        return stores
+
+    def get_store(self, store_id: str) -> dict[str, Any]:
+        trimmed = store_id.strip()
+        if not trimmed:
+            raise ProviderError("Store id cannot be empty")
+
+        token = self.refresh_access_token()
+        req = request.Request(
+            f"https://apimgw-pub.ica.se/sverige/digx/mobile/storeservice/v1/stores/{parse.quote(trimmed)}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+            },
+            method="GET",
+        )
+        try:
+            with request.urlopen(req, timeout=20) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except error.HTTPError as http_error:
+            body = http_error.read().decode("utf-8", errors="replace")
+            raise ProviderError(
+                f"Store fetch failed for id '{trimmed}': HTTP {http_error.code}: {body}"
+            ) from http_error
+        except error.URLError as url_error:
+            raise ProviderError(
+                f"Store fetch failed for id '{trimmed}': {url_error.reason}"
+            ) from url_error
+
+        if not isinstance(payload, dict):
+            raise ProviderError("Unexpected current store response format")
+        return payload
+
+    def list_favorite_stores(self) -> dict[str, Any]:
+        token = self.refresh_access_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        }
+        req = request.Request(
+            "https://apimgw-pub.ica.se/sverige/digx/mobile/storeservice/v1/favorites",
+            headers=headers,
+            method="GET",
+        )
+        try:
+            with request.urlopen(req, timeout=20) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except error.HTTPError as http_error:
+            body = http_error.read().decode("utf-8", errors="replace")
+            raise ProviderError(
+                f"Favorite stores fetch failed: HTTP {http_error.code}: {body}"
+            ) from http_error
+        except error.URLError as url_error:
+            raise ProviderError(
+                f"Favorite stores fetch failed: {url_error.reason}"
+            ) from url_error
+
+        ids: list[str] = []
+        if isinstance(payload, dict):
+            raw_ids = payload.get("favoriteStores")
+            if isinstance(raw_ids, list):
+                ids = [str(item).strip() for item in raw_ids if str(item).strip()]
+
+        stores = self._hydrate_stores_by_ids(ids, headers)
+        return {
+            "store_ids": ids,
+            "stores": stores,
+        }

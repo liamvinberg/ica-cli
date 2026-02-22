@@ -1,0 +1,11 @@
+{
+  "name": "ica-cli",
+  "version": "0.1.0",
+  "description": "ICA grocery list skill wrapper",
+  "commands": {
+    "auth_status": "ica --json auth status",
+    "list_all": "ica --json list ls",
+    "add_item": "ica --json list add \"{{item}}\" --list-name \"{{list_name}}\"",
+    "search_products": "ica --json products search \"{{query}}\" --store-id \"{{store_id}}\""
+  }
+}

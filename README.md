@@ -244,9 +244,21 @@ Example command shape:
 uv run ica --json list add "avokado" --list-name "Min lista"
 ```
 
-## Homebrew release scaffold
+## Install via Homebrew
 
-See `packaging/homebrew/README.md` for archive and formula generation.
+```bash
+brew tap liamvinberg/tap
+brew install ica-cli
+```
+
+Upgrade to the latest release:
+
+```bash
+brew update
+brew upgrade ica-cli
+```
+
+The tap is automatically updated when a new GitHub release is published. See `packaging/homebrew/README.md` for manual formula generation.
 
 ## Notes
 

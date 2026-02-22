@@ -116,6 +116,16 @@ class CliParserTests(unittest.TestCase):
             "https://www.ica.se/logga-in/sso/callback/?code=abc&state=def",
         )
 
+    def test_parser_accepts_auth_login_user_pass(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            ["auth", "login", "--user", "199001011234", "--pass", "secret"]
+        )
+        self.assertEqual(args.command, "auth")
+        self.assertEqual(args.auth_cmd, "login")
+        self.assertEqual(args.username, "199001011234")
+        self.assertEqual(args.password, "secret")
+
     def test_parse_callback_url(self) -> None:
         code, state = _parse_callback_url(
             "https://www.ica.se/logga-in/sso/callback/?iss=x&code=abc123&state=st-1"

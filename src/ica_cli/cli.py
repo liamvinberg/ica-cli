@@ -47,6 +47,26 @@ def _kc_current_pkce_state(username: str) -> str:
     return f"current-pkce-state:{username}"
 
 
+def _kc_legacy_auth_ticket(username: str) -> str:
+    return f"legacy-auth-ticket:{username}"
+
+
+def _kc_legacy_access(username: str) -> str:
+    return f"legacy-access-token:{username}"
+
+
+def _kc_legacy_refresh(username: str) -> str:
+    return f"legacy-refresh-token:{username}"
+
+
+def _kc_legacy_oauth_client_id(username: str) -> str:
+    return f"legacy-oauth-client-id:{username}"
+
+
+def _kc_legacy_oauth_client_secret(username: str) -> str:
+    return f"legacy-oauth-client-secret:{username}"
+
+
 def _base64url(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 
@@ -171,7 +191,9 @@ def _format_human(payload: object, args: argparse.Namespace) -> str:
             if provider == "ica-legacy":
                 return (
                     f"Auth status for {username}: provider=ica-legacy, "
-                    f"authenticated={'yes' if payload.get('authenticated') else 'no'}"
+                    f"authenticated={'yes' if payload.get('authenticated') else 'no'}, "
+                    f"auth_ticket={'yes' if payload.get('has_auth_ticket') else 'no'}, "
+                    f"access_token={'yes' if payload.get('has_access_token') else 'no'}"
                 )
 
         if auth_cmd == "login" and payload.get("mode") == "agentic":
@@ -190,6 +212,10 @@ def _format_human(payload: object, args: argparse.Namespace) -> str:
                 return "Login successful using imported session id."
             if method == "session-id-fallback":
                 return "Login successful using thSessionId fallback."
+            if method == "legacy-ticket":
+                return "Login successful using legacy authentication ticket."
+            if method == "current-oauth-fallback":
+                return "Login successful using legacy fallback OAuth flow."
             return "Authentication data saved."
 
     if command == "list" and isinstance(payload, dict):
@@ -266,6 +292,33 @@ def _require_username(config: AppConfig) -> str:
     return config.username
 
 
+def _resolve_auth_username(config: AppConfig, args: argparse.Namespace) -> str:
+    cli_username = getattr(args, "username", None)
+    if isinstance(cli_username, str):
+        cli_username = cli_username.strip()
+    if cli_username:
+        if config.username != cli_username:
+            config.username = cli_username
+            save_config(config)
+        return cli_username
+
+    if config.username:
+        return config.username
+
+    if getattr(args, "agentic", False) or getattr(args, "non_interactive", False):
+        raise ProviderError(
+            "No username configured. Pass --username (or --user) in non-interactive mode."
+        )
+
+    username = input("ICA username/personnummer: ").strip()
+    if not username:
+        raise ProviderError("No username provided")
+
+    config.username = username
+    save_config(config)
+    return username
+
+
 def _store_current_auth(
     username: str,
     session_id: str | None = None,
@@ -278,6 +331,26 @@ def _store_current_auth(
         keychain_set(_kc_current_access(username), access_token)
     if refresh_token:
         keychain_set(_kc_current_refresh(username), refresh_token)
+
+
+def _store_legacy_auth(
+    username: str,
+    auth_ticket: str | None = None,
+    access_token: str | None = None,
+    refresh_token: str | None = None,
+    oauth_client_id: str | None = None,
+    oauth_client_secret: str | None = None,
+) -> None:
+    if auth_ticket:
+        keychain_set(_kc_legacy_auth_ticket(username), auth_ticket)
+    if access_token:
+        keychain_set(_kc_legacy_access(username), access_token)
+    if refresh_token:
+        keychain_set(_kc_legacy_refresh(username), refresh_token)
+    if oauth_client_id:
+        keychain_set(_kc_legacy_oauth_client_id(username), oauth_client_id)
+    if oauth_client_secret:
+        keychain_set(_kc_legacy_oauth_client_secret(username), oauth_client_secret)
 
 
 def _ensure_current_provider(config: AppConfig) -> None:
@@ -403,10 +476,12 @@ def cmd_config_set_store_id(args: argparse.Namespace, config: AppConfig) -> obje
 
 
 def cmd_auth_login(args: argparse.Namespace, config: AppConfig) -> object:
-    username = _require_username(config)
+    username = _resolve_auth_username(config, args)
     if config.provider == "ica-legacy":
         if args.password_stdin:
             password = sys.stdin.read().strip()
+        elif args.password:
+            password = args.password
         else:
             password = getpass.getpass("ICA password: ")
         if not password:
@@ -414,10 +489,45 @@ def cmd_auth_login(args: argparse.Namespace, config: AppConfig) -> object:
 
         provider = IcaLegacyProvider()
         login_result = provider.login(username=username, password=password)
-        keychain_set(f"legacy-auth-ticket:{username}", login_result["auth_ticket"])
+        method = login_result.get("method")
+        auth_ticket = login_result.get("auth_ticket")
+        access_token = login_result.get("access_token")
+        refresh_token = login_result.get("refresh_token")
+        oauth_client_id = login_result.get("oauth_client_id")
+        oauth_client_secret = login_result.get("oauth_client_secret")
+
+        if isinstance(auth_ticket, str) and auth_ticket:
+            _store_legacy_auth(username=username, auth_ticket=auth_ticket)
+
+        if isinstance(access_token, str) and access_token:
+            _store_legacy_auth(
+                username=username,
+                access_token=access_token,
+                refresh_token=refresh_token if isinstance(refresh_token, str) else None,
+                oauth_client_id=oauth_client_id
+                if isinstance(oauth_client_id, str)
+                else None,
+                oauth_client_secret=(
+                    oauth_client_secret
+                    if isinstance(oauth_client_secret, str)
+                    else None
+                ),
+            )
+
+        if isinstance(login_result.get("session_id"), str) and login_result.get(
+            "session_id"
+        ):
+            _store_current_auth(
+                username=username,
+                session_id=login_result["session_id"],
+            )
+
         return {
             "ok": True,
             "provider": "ica-legacy",
+            "method": method,
+            "has_auth_ticket": isinstance(auth_ticket, str) and bool(auth_ticket),
+            "has_access_token": isinstance(access_token, str) and bool(access_token),
             "profile": login_result.get("profile", {}),
         }
 
@@ -636,7 +746,11 @@ def cmd_auth_login_current(args: argparse.Namespace, config: AppConfig) -> objec
 
 def cmd_auth_logout(_: argparse.Namespace, config: AppConfig) -> object:
     username = _require_username(config)
-    keychain_delete(f"legacy-auth-ticket:{username}")
+    keychain_delete(_kc_legacy_auth_ticket(username))
+    keychain_delete(_kc_legacy_access(username))
+    keychain_delete(_kc_legacy_refresh(username))
+    keychain_delete(_kc_legacy_oauth_client_id(username))
+    keychain_delete(_kc_legacy_oauth_client_secret(username))
     keychain_delete(_kc_current_session(username))
     keychain_delete(_kc_current_access(username))
     keychain_delete(_kc_current_refresh(username))
@@ -649,10 +763,14 @@ def cmd_auth_status(_: argparse.Namespace, config: AppConfig) -> object:
     provider = build_provider(config)
     username = _require_username(config)
     if isinstance(provider, IcaLegacyProvider):
+        has_auth_ticket = provider.auth_ticket is not None
+        has_access_token = provider.access_token is not None
         return {
             "provider": "ica-legacy",
             "username": username,
-            "authenticated": provider.auth_ticket is not None,
+            "authenticated": has_auth_ticket or has_access_token,
+            "has_auth_ticket": has_auth_ticket,
+            "has_access_token": has_access_token,
         }
     if isinstance(provider, IcaCurrentProvider):
         return {
@@ -737,6 +855,8 @@ def build_parser() -> argparse.ArgumentParser:
     auth_sub = auth_parser.add_subparsers(dest="auth_cmd", required=True)
 
     auth_login = auth_sub.add_parser("login")
+    auth_login.add_argument("--username", "--user", dest="username")
+    auth_login.add_argument("--password", "--pass", dest="password")
     auth_login.add_argument("--password-stdin", action="store_true")
     auth_login.add_argument("--callback-url")
     auth_login.add_argument("--session-id")

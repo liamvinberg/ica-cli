@@ -36,7 +36,25 @@ def build_provider(config: AppConfig) -> IcaProvider:
 
     if config.provider == "ica-legacy":
         auth_ticket = keychain_get(f"legacy-auth-ticket:{username}")
-        return IcaLegacyProvider(auth_ticket=auth_ticket)
+        access_token = os.getenv("ICA_LEGACY_ACCESS_TOKEN") or keychain_get(
+            f"legacy-access-token:{username}"
+        )
+        refresh_token = os.getenv("ICA_LEGACY_REFRESH_TOKEN") or keychain_get(
+            f"legacy-refresh-token:{username}"
+        )
+        oauth_client_id = os.getenv("ICA_LEGACY_OAUTH_CLIENT_ID") or keychain_get(
+            f"legacy-oauth-client-id:{username}"
+        )
+        oauth_client_secret = os.getenv(
+            "ICA_LEGACY_OAUTH_CLIENT_SECRET"
+        ) or keychain_get(f"legacy-oauth-client-secret:{username}")
+        return IcaLegacyProvider(
+            auth_ticket=auth_ticket,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            oauth_client_id=oauth_client_id,
+            oauth_client_secret=oauth_client_secret,
+        )
 
     raise ProviderError(
         f"Unknown provider '{config.provider}'. Supported providers: ica-current, ica-legacy"

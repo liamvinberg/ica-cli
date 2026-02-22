@@ -20,6 +20,20 @@ uv run ica --json config show
 uv run python -m unittest discover -s src -p "test_*.py"
 ```
 
+## Output modes
+
+- Default: human-readable CLI output.
+- `--json`: full structured output.
+- `--raw`: raw API payload only (useful for scripts).
+
+Examples:
+
+```bash
+uv run ica config show
+uv run ica --json list ls
+uv run ica --raw list ls
+```
+
 ## Quick start
 
 ```bash

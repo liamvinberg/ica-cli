@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ica-cli"
+version = "0.1.0"
+description = "Experimental ICA grocery CLI for personal automation"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Liam Vinberg" }]
+dependencies = []
+
+[project.scripts]
+ica = "ica_cli.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

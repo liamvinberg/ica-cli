@@ -17,6 +17,13 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.item, "mjolk")
         self.assertEqual(args.list_name, "Min lista")
 
+    def test_parser_accepts_list_items(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["list", "items", "--list-name", "Min lista"])
+        self.assertEqual(args.command, "list")
+        self.assertEqual(args.list_cmd, "items")
+        self.assertEqual(args.list_name, "Min lista")
+
     def test_parser_accepts_auth_session_import(self) -> None:
         parser = build_parser()
         args = parser.parse_args(
@@ -172,6 +179,23 @@ class CliParserTests(unittest.TestCase):
         self.assertIn("Shopping lists (2):", text)
         self.assertIn("- Min lista (2 items)", text)
         self.assertIn("- Helg (1 items)", text)
+
+    def test_human_format_list_items(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["list", "items", "--list-name", "Min lista"])
+        payload = {
+            "provider": "ica-current",
+            "list": "Min lista",
+            "items": [
+                {"text": "mjolk", "isStriked": False},
+                {"text": "brod", "isStriked": True},
+            ],
+            "count": 2,
+        }
+        text = _format_human(payload, args)
+        self.assertIn('Items in "Min lista" (2):', text)
+        self.assertIn("- [ ] mjolk", text)
+        self.assertIn("- [x] brod", text)
 
 
 if __name__ == "__main__":

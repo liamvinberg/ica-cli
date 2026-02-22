@@ -126,6 +126,8 @@ def _extract_raw_payload(payload: object) -> object:
         return payload["result"]
     if "lists" in payload:
         return payload["lists"]
+    if "items" in payload:
+        return payload["items"]
     if "profile" in payload:
         return payload["profile"]
     return payload
@@ -148,6 +150,45 @@ def _list_item_count(item: dict[str, object]) -> int | None:
     count = item.get("rowCount")
     if isinstance(count, int):
         return count
+    return None
+
+
+def _list_rows(item: dict[str, object]) -> list[dict[str, object]]:
+    rows = item.get("rows")
+    if isinstance(rows, list):
+        return [row for row in rows if isinstance(row, dict)]
+    rows = item.get("Rows")
+    if isinstance(rows, list):
+        return [row for row in rows if isinstance(row, dict)]
+    return []
+
+
+def _row_name(row: dict[str, object]) -> str:
+    value = row.get("text") or row.get("name") or row.get("ProductName")
+    if isinstance(value, str) and value:
+        return value
+    return "<unnamed item>"
+
+
+def _row_is_done(row: dict[str, object]) -> bool:
+    value = row.get("isStriked")
+    if isinstance(value, bool):
+        return value
+    value = row.get("IsStrikedOver")
+    if isinstance(value, bool):
+        return value
+    return False
+
+
+def _find_list_by_name(
+    lists: list[dict[str, object]],
+    list_name: str,
+) -> dict[str, object] | None:
+    normalized_target = list_name.strip().lower()
+    for item in lists:
+        name = _list_name(item)
+        if name.strip().lower() == normalized_target:
+            return item
     return None
 
 
@@ -241,6 +282,20 @@ def _format_human(payload: object, args: argparse.Namespace) -> str:
             item_name = payload.get("item")
             if isinstance(list_name, str) and isinstance(item_name, str):
                 return f'Added "{item_name}" to "{list_name}".'
+
+        if list_cmd == "items":
+            list_name = payload.get("list")
+            items = payload.get("items")
+            if isinstance(list_name, str) and isinstance(items, list):
+                if len(items) == 0:
+                    return f'No items in "{list_name}".'
+                lines = [f'Items in "{list_name}" ({len(items)}):']
+                for row in items:
+                    if not isinstance(row, dict):
+                        continue
+                    marker = "[x]" if _row_is_done(row) else "[ ]"
+                    lines.append(f"- {marker} {_row_name(row)}")
+                return "\n".join(lines)
 
     if command == "products" and isinstance(payload, dict):
         result = payload.get("result")
@@ -801,6 +856,38 @@ def cmd_list_add(args: argparse.Namespace, config: AppConfig) -> object:
     )
 
 
+def cmd_list_items(args: argparse.Namespace, config: AppConfig) -> object:
+    provider = build_provider(config)
+    raw_lists = provider.list_lists()
+    lists = [item for item in raw_lists if isinstance(item, dict)]
+
+    list_name = args.list_name or config.default_list_name
+    if not list_name:
+        if len(lists) == 1:
+            selected = lists[0]
+            list_name = _list_name(selected)
+        else:
+            raise ProviderError(
+                "No list name provided. Use --list-name or set default with: ica config set-default-list <name>"
+            )
+
+    selected = _find_list_by_name(lists, list_name)
+    if not selected:
+        raise ProviderError(
+            f"List '{list_name}' not found. Existing lists: "
+            + ", ".join(_list_name(item) for item in lists)
+        )
+
+    rows = _list_rows(selected)
+    resolved_name = _list_name(selected)
+    return {
+        "provider": config.provider,
+        "list": resolved_name,
+        "items": rows,
+        "count": len(rows),
+    }
+
+
 def cmd_products_search(args: argparse.Namespace, config: AppConfig) -> object:
     provider = build_provider(config)
     store_id = args.store_id or config.store_id
@@ -916,6 +1003,10 @@ def build_parser() -> argparse.ArgumentParser:
     list_add.add_argument("--list-name")
     list_add.add_argument("--quantity")
     list_add.set_defaults(handler=cmd_list_add)
+
+    list_items = list_sub.add_parser("items")
+    list_items.add_argument("--list-name")
+    list_items.set_defaults(handler=cmd_list_items)
 
     products_parser = subparsers.add_parser("products")
     products_sub = products_parser.add_subparsers(dest="products_cmd", required=True)

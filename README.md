@@ -32,18 +32,30 @@ uv run ica config set-provider ica-current
 
 ### `ica-current` (recommended)
 
-Uses a `thSessionId` session cookie imported from a valid ICA web/app session.
+Supports two paths:
+
+- OAuth callback flow (preferred)
+- Session cookie import (`thSessionId`) fallback
+
+```bash
+uv run ica --json auth current-begin
+# Open authorize_url, complete login, copy full callback URL from browser
+uv run ica --json auth current-complete --callback-url "https://www.ica.se/logga-in/sso/callback/?...&code=...&state=..."
+uv run ica --json auth status
+uv run ica --json list ls
+```
+
+Fallback if OAuth completion does not return tokens:
 
 ```bash
 uv run ica auth session import --session-id "<thSessionId>"
-uv run ica auth status --json
-uv run ica list ls --json
+uv run ica --json auth status
 ```
 
-Scaffolded helper flow (prints an authorize URL and validates the imported session):
+Direct token import for remote/agent runtimes:
 
 ```bash
-uv run ica auth login-current --show-authorize-url
+uv run ica --json auth token import --access-token "<token>" --refresh-token "<refresh>"
 ```
 
 ### `ica-legacy` (experimental)
@@ -53,7 +65,7 @@ Uses legacy login flow (`handla.api.ica.se/api/login`) with personnummer + passw
 ```bash
 uv run ica config set-provider ica-legacy
 uv run ica auth login
-uv run ica list ls --json
+uv run ica --json list ls
 ```
 
 Non-interactive login for automation:
@@ -66,15 +78,15 @@ printf '%s' "$ICA_PASSWORD" | uv run ica auth login --password-stdin
 
 ```bash
 uv run ica config set-default-list "Min lista"
-uv run ica list add "mjolk" --json
-uv run ica list add "bananer" --list-name "Helg" --quantity 2 --json
+uv run ica --json list add "mjolk"
+uv run ica --json list add "bananer" --list-name "Helg" --quantity 2
 ```
 
 ## Search products
 
 ```bash
 uv run ica config set-store-id "1004394"
-uv run ica products search "ost" --json
+uv run ica --json products search "ost"
 ```
 
 ## Secrets and storage
@@ -82,7 +94,23 @@ uv run ica products search "ost" --json
 - Configuration: `~/.config/ica-cli/config.json`
 - Sensitive values: macOS Keychain (`security` CLI)
   - `current-session:<username>` for `thSessionId`
+  - `current-access-token:<username>` for OAuth access token
+  - `current-refresh-token:<username>` for OAuth refresh token
   - `legacy-auth-ticket:<username>` for legacy auth ticket
+
+## Remote/OpenClaw execution
+
+For non-local runtimes, avoid keychain dependencies and inject credentials as env vars:
+
+```bash
+export ICA_CURRENT_ACCESS_TOKEN="..."
+export ICA_CURRENT_REFRESH_TOKEN="..."
+# optional fallback
+export ICA_CURRENT_SESSION_ID="..."
+uv run ica --json list ls
+```
+
+Environment variables override keychain values when both are set.
 
 ## OpenClaw skill usage
 

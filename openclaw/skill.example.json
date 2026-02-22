@@ -2,6 +2,10 @@
   "name": "ica-cli",
   "version": "0.1.0",
   "description": "ICA grocery list skill wrapper",
+  "environment": {
+    "ICA_CURRENT_ACCESS_TOKEN": "<required-or-provided-by-secret-store>",
+    "ICA_CURRENT_REFRESH_TOKEN": "<optional>"
+  },
   "commands": {
     "auth_status": "ica --json auth status",
     "list_all": "ica --json list ls",

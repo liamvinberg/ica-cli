@@ -2,6 +2,11 @@
 
 Use `openclaw/skill.example.json` as a starting point for wiring commands to your local OpenClaw skill runtime.
 
+For remote runtimes, set one of these environment sets before running commands:
+
+- `ICA_CURRENT_ACCESS_TOKEN` (+ optional `ICA_CURRENT_REFRESH_TOKEN`)
+- or `ICA_CURRENT_SESSION_ID`
+
 Suggested minimum command contract:
 
 - Inputs are strings and mapped into CLI args.

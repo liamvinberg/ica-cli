@@ -98,14 +98,164 @@ def _parse_callback_url(callback_url: str) -> tuple[str, str]:
     return code, state
 
 
-def _emit(payload: object, as_json: bool) -> None:
-    if as_json:
+def _extract_raw_payload(payload: object) -> object:
+    if not isinstance(payload, dict):
+        return payload
+
+    if "result" in payload:
+        return payload["result"]
+    if "lists" in payload:
+        return payload["lists"]
+    if "profile" in payload:
+        return payload["profile"]
+    return payload
+
+
+def _list_name(item: dict[str, object]) -> str:
+    value = item.get("name") or item.get("Title") or item.get("OfflineName")
+    if isinstance(value, str) and value:
+        return value
+    return "<unnamed list>"
+
+
+def _list_item_count(item: dict[str, object]) -> int | None:
+    rows = item.get("rows")
+    if isinstance(rows, list):
+        return len(rows)
+    rows = item.get("Rows")
+    if isinstance(rows, list):
+        return len(rows)
+    count = item.get("rowCount")
+    if isinstance(count, int):
+        return count
+    return None
+
+
+def _format_human(payload: object, args: argparse.Namespace) -> str:
+    command = getattr(args, "command", None)
+    if isinstance(payload, str):
+        return payload
+
+    if command == "config" and isinstance(payload, dict):
+        config_cmd = getattr(args, "config_cmd", None)
+        if config_cmd == "show":
+            lines = ["Config:"]
+            lines.append(f"- provider: {payload.get('provider') or '-'}")
+            lines.append(f"- username: {payload.get('username') or '-'}")
+            lines.append(
+                f"- default_list_name: {payload.get('default_list_name') or '-'}"
+            )
+            lines.append(f"- store_id: {payload.get('store_id') or '-'}")
+            return "\n".join(lines)
+
+        updates = [
+            f"{key}={value}"
+            for key, value in payload.items()
+            if key != "ok" and value is not None
+        ]
+        if updates:
+            return "Updated " + ", ".join(updates)
+
+    if command == "auth" and isinstance(payload, dict):
+        auth_cmd = getattr(args, "auth_cmd", None)
+        if auth_cmd == "status":
+            provider = payload.get("provider", "unknown")
+            username = payload.get("username", "-")
+            if provider == "ica-current":
+                return (
+                    f"Auth status for {username}: provider=ica-current, "
+                    f"session={'yes' if payload.get('has_session') else 'no'}, "
+                    f"access_token={'yes' if payload.get('has_access_token') else 'no'}, "
+                    f"refresh_token={'yes' if payload.get('has_refresh_token') else 'no'}"
+                )
+            if provider == "ica-legacy":
+                return (
+                    f"Auth status for {username}: provider=ica-legacy, "
+                    f"authenticated={'yes' if payload.get('authenticated') else 'no'}"
+                )
+
+        if auth_cmd == "login" and payload.get("mode") == "agentic":
+            return (
+                "Agentic auth prepared. Open this URL and then pass callback URL:\n"
+                f"{payload.get('authorize_url')}"
+            )
+
+        if payload.get("ok"):
+            method = payload.get("method")
+            if method == "callback-session":
+                return "Login successful using callback session handoff."
+            if method == "authorization-code":
+                return "Login successful using authorization-code exchange."
+            if method == "session-id":
+                return "Login successful using imported session id."
+            if method == "session-id-fallback":
+                return "Login successful using thSessionId fallback."
+            return "Authentication data saved."
+
+    if command == "list" and isinstance(payload, dict):
+        list_cmd = getattr(args, "list_cmd", None)
+        if list_cmd == "ls":
+            lists = payload.get("lists")
+            if not isinstance(lists, list) or len(lists) == 0:
+                return "No shopping lists found."
+            lines = [f"Shopping lists ({len(lists)}):"]
+            for item in lists:
+                if not isinstance(item, dict):
+                    continue
+                name = _list_name(item)
+                count = _list_item_count(item)
+                if count is None:
+                    lines.append(f"- {name}")
+                else:
+                    lines.append(f"- {name} ({count} items)")
+            return "\n".join(lines)
+
+        if list_cmd == "add":
+            list_name = payload.get("list")
+            item_name = payload.get("item")
+            if isinstance(list_name, str) and isinstance(item_name, str):
+                return f'Added "{item_name}" to "{list_name}".'
+
+    if command == "products" and isinstance(payload, dict):
+        result = payload.get("result")
+        query = payload.get("query", "")
+        if isinstance(result, dict):
+            entries = result.get("documents")
+            if not isinstance(entries, list):
+                entries = result.get("products")
+            if isinstance(entries, list):
+                if len(entries) == 0:
+                    return f'No product matches for "{query}".'
+                lines = [f'Product matches for "{query}" ({len(entries)}):']
+                for entry in entries[:10]:
+                    if not isinstance(entry, dict):
+                        continue
+                    name = (
+                        entry.get("name")
+                        or entry.get("productName")
+                        or entry.get("title")
+                    )
+                    if not isinstance(name, str) or not name:
+                        name = str(entry.get("id", "<unknown>"))
+                    lines.append(f"- {name}")
+                if len(entries) > 10:
+                    lines.append(f"...and {len(entries) - 10} more")
+                return "\n".join(lines)
+
+    return json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True)
+
+
+def _emit(payload: object, args: argparse.Namespace) -> None:
+    if args.raw:
+        raw_payload = _extract_raw_payload(payload)
+        print(json.dumps(raw_payload, ensure_ascii=True, separators=(",", ":")))
+        return
+
+    if args.json:
         print(json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True))
         return
-    if isinstance(payload, str):
-        print(payload)
-        return
-    print(json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True))
+
+    print(_format_human(payload, args))
 
 
 def _require_username(config: AppConfig) -> str:
@@ -551,7 +701,13 @@ def cmd_products_search(args: argparse.Namespace, config: AppConfig) -> object:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ica", description="ICA CLI")
-    parser.add_argument("--json", action="store_true", help="Output JSON")
+    output_group = parser.add_mutually_exclusive_group()
+    output_group.add_argument("--json", action="store_true", help="Output JSON")
+    output_group.add_argument(
+        "--raw",
+        action="store_true",
+        help="Output raw API payload only",
+    )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -658,10 +814,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = args.handler(args, config)
     except ProviderError as error:
-        _emit({"ok": False, "error": str(error)}, as_json=True)
+        if args.json or args.raw:
+            _emit({"ok": False, "error": str(error)}, args)
+        else:
+            print(f"Error: {error}")
         return 1
 
-    _emit(result, as_json=args.json)
+    _emit(result, args)
     return 0
 
 

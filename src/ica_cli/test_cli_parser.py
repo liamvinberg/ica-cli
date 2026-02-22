@@ -1,6 +1,11 @@
 import unittest
 
-from ica_cli.cli import _parse_callback_url, build_parser
+from ica_cli.cli import (
+    _extract_raw_payload,
+    _format_human,
+    _parse_callback_url,
+    build_parser,
+)
 
 
 class CliParserTests(unittest.TestCase):
@@ -124,6 +129,39 @@ class CliParserTests(unittest.TestCase):
         )
         self.assertEqual(code, "abc123")
         self.assertEqual(state, "st-1")
+
+    def test_parser_accepts_raw_output_flag(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["--raw", "config", "show"])
+        self.assertTrue(args.raw)
+        self.assertFalse(args.json)
+
+    def test_extract_raw_payload_prefers_result_field(self) -> None:
+        payload = {"list": "Min lista", "item": "mjolk", "result": {"id": "r1"}}
+        raw = _extract_raw_payload(payload)
+        self.assertEqual(raw, {"id": "r1"})
+
+    def test_human_format_list_add(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["list", "add", "mjolk", "--list-name", "Min lista"])
+        payload = {"list": "Min lista", "item": "mjolk", "result": {"id": "r1"}}
+        text = _format_human(payload, args)
+        self.assertEqual(text, 'Added "mjolk" to "Min lista".')
+
+    def test_human_format_list_ls(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["list", "ls"])
+        payload = {
+            "provider": "ica-current",
+            "lists": [
+                {"name": "Min lista", "rows": [{}, {}]},
+                {"OfflineName": "Helg", "Rows": [{}]},
+            ],
+        }
+        text = _format_human(payload, args)
+        self.assertIn("Shopping lists (2):", text)
+        self.assertIn("- Min lista (2 items)", text)
+        self.assertIn("- Helg (1 items)", text)
 
 
 if __name__ == "__main__":

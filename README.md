@@ -1,12 +1,14 @@
 # ica-cli
 
-Experimental ICA grocery CLI for personal automation and OpenClaw skill usage.
+CLI for ICA grocery automation, using ICA account login at https://www.ica.se/.
+
+It helps you authenticate, inspect shopping lists, add list items, and search products from scripts or agents.
 
 ## Why this exists
 
-- Personal CLI for managing ICA shopping lists.
-- Agent-friendly command interface with JSON output.
-- Provider abstraction to handle ICA API changes over time.
+- Manage ICA shopping list workflows from terminal commands.
+- Integrate with scripts/agents via stable `--json` output.
+- Keep auth and provider handling in one place when ICA APIs evolve.
 
 ## Package manager
 

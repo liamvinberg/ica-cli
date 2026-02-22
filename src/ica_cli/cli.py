@@ -905,7 +905,13 @@ def cmd_products_search(args: argparse.Namespace, config: AppConfig) -> object:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="ica", description="ICA CLI")
+    parser = argparse.ArgumentParser(
+        prog="ica",
+        description=(
+            "CLI for ICA shopping automation. "
+            "Manage list/auth/product commands via ICA endpoints and ICA login at https://www.ica.se/."
+        ),
+    )
     output_group = parser.add_mutually_exclusive_group()
     output_group.add_argument("--json", action="store_true", help="Output JSON")
     output_group.add_argument(

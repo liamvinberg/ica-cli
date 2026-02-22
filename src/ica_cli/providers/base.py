@@ -58,6 +58,29 @@ class IcaProvider(ABC):
         }
 
     @abstractmethod
+    def remove_item(
+        self,
+        list_name: str,
+        item_name: str,
+        all_matches: bool = False,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_item_striked(
+        self,
+        list_name: str,
+        item_name: str,
+        striked: bool,
+        all_matches: bool = False,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def clear_striked(self, list_name: str) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
     def search_products(self, store_id: str, query: str) -> dict[str, Any]:
         raise NotImplementedError
 

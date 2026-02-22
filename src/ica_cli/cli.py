@@ -307,6 +307,18 @@ def _format_human(payload: object, args: argparse.Namespace) -> str:
                 f"{payload.get('authorize_url')}"
             )
 
+        if auth_cmd == "current-begin":
+            authorize_url = payload.get("authorize_url")
+            next_step = payload.get("next")
+            if isinstance(authorize_url, str) and authorize_url:
+                lines = [
+                    "Current auth initialized. Open this URL and complete ICA login:",
+                    authorize_url,
+                ]
+                if isinstance(next_step, str) and next_step:
+                    lines.append(next_step)
+                return "\n".join(lines)
+
         if payload.get("ok"):
             method = payload.get("method")
             if method == "callback-session":
@@ -373,6 +385,45 @@ def _format_human(payload: object, args: argparse.Namespace) -> str:
                         f"Failed: {len(errors)} items. Use --json for details."
                     )
                 return f'Added {count} items to "{list_name}": {preview}.'
+
+        if list_cmd == "remove":
+            list_name = payload.get("list")
+            item_name = payload.get("item")
+            removed = payload.get("removed")
+            if (
+                isinstance(list_name, str)
+                and isinstance(item_name, str)
+                and isinstance(removed, int)
+            ):
+                if removed == 0:
+                    return f'No items removed from "{list_name}".'
+                if removed == 1:
+                    return f'Removed "{item_name}" from "{list_name}".'
+                return (
+                    f'Removed {removed} items named "{item_name}" from "{list_name}".'
+                )
+
+        if list_cmd in {"strike", "unstrike"}:
+            list_name = payload.get("list")
+            item_name = payload.get("item")
+            updated = payload.get("updated")
+            if (
+                isinstance(list_name, str)
+                and isinstance(item_name, str)
+                and isinstance(updated, int)
+            ):
+                verb = "Striked" if list_cmd == "strike" else "Unstriked"
+                if updated == 1:
+                    return f'{verb} "{item_name}" in "{list_name}".'
+                return f'{verb} {updated} items named "{item_name}" in "{list_name}".'
+
+        if list_cmd == "clear-struck":
+            list_name = payload.get("list")
+            removed = payload.get("removed")
+            if isinstance(list_name, str) and isinstance(removed, int):
+                if removed == 0:
+                    return f'No struck items to clear in "{list_name}".'
+                return f'Cleared {removed} struck items from "{list_name}".'
 
         if list_cmd == "items":
             list_name = payload.get("list")
@@ -510,6 +561,10 @@ def _format_human(payload: object, args: argparse.Namespace) -> str:
 
 
 def _emit(payload: object, args: argparse.Namespace) -> None:
+    if args.quiet or args.short:
+        print("ok")
+        return
+
     if args.raw:
         raw_payload = _extract_raw_payload(payload)
         print(json.dumps(raw_payload, ensure_ascii=True, separators=(",", ":")))
@@ -773,6 +828,32 @@ def _resolve_store_id(args: argparse.Namespace, config: AppConfig) -> str | None
             return first
 
     return config.store_id
+
+
+def _store_ids_from_search_result(result: object) -> list[str]:
+    if not isinstance(result, dict):
+        return []
+
+    ids_raw = result.get("store_ids")
+    if isinstance(ids_raw, list):
+        parsed = [str(item).strip() for item in ids_raw if str(item).strip()]
+        if parsed:
+            return parsed
+
+    stores = result.get("stores")
+    ids: list[str] = []
+    if isinstance(stores, list):
+        for store in stores:
+            if not isinstance(store, dict):
+                continue
+            candidate = store.get("id")
+            if candidate is None:
+                candidate = store.get("Id")
+            if isinstance(candidate, int):
+                ids.append(str(candidate))
+            elif isinstance(candidate, str) and candidate.strip():
+                ids.append(candidate.strip())
+    return ids
 
 
 def cmd_auth_login(args: argparse.Namespace, config: AppConfig) -> object:
@@ -1144,14 +1225,94 @@ def cmd_list_items(args: argparse.Namespace, config: AppConfig) -> object:
     }
 
 
+def _resolve_target_list_name(
+    args: argparse.Namespace,
+    config: AppConfig,
+    provider_lists: list[dict[str, object]],
+) -> str:
+    list_name = args.list_name or config.default_list_name
+    if list_name:
+        return list_name
+
+    if len(provider_lists) == 1:
+        return _list_name(provider_lists[0])
+
+    raise ProviderError(
+        "No list name provided. Use --list-name or set default with: ica config set-default-list <name>"
+    )
+
+
+def cmd_list_remove(args: argparse.Namespace, config: AppConfig) -> object:
+    provider = build_provider(config)
+    raw_lists = provider.list_lists()
+    lists = [item for item in raw_lists if isinstance(item, dict)]
+    list_name = _resolve_target_list_name(args, config, lists)
+    return provider.remove_item(
+        list_name=list_name,
+        item_name=args.item,
+        all_matches=args.all,
+    )
+
+
+def cmd_list_strike(args: argparse.Namespace, config: AppConfig) -> object:
+    provider = build_provider(config)
+    raw_lists = provider.list_lists()
+    lists = [item for item in raw_lists if isinstance(item, dict)]
+    list_name = _resolve_target_list_name(args, config, lists)
+    return provider.set_item_striked(
+        list_name=list_name,
+        item_name=args.item,
+        striked=True,
+        all_matches=args.all,
+    )
+
+
+def cmd_list_unstrike(args: argparse.Namespace, config: AppConfig) -> object:
+    provider = build_provider(config)
+    raw_lists = provider.list_lists()
+    lists = [item for item in raw_lists if isinstance(item, dict)]
+    list_name = _resolve_target_list_name(args, config, lists)
+    return provider.set_item_striked(
+        list_name=list_name,
+        item_name=args.item,
+        striked=False,
+        all_matches=args.all,
+    )
+
+
+def cmd_list_clear_striked(args: argparse.Namespace, config: AppConfig) -> object:
+    provider = build_provider(config)
+    raw_lists = provider.list_lists()
+    lists = [item for item in raw_lists if isinstance(item, dict)]
+    list_name = _resolve_target_list_name(args, config, lists)
+    return provider.clear_striked(list_name=list_name)
+
+
 def cmd_products_search(args: argparse.Namespace, config: AppConfig) -> object:
     provider = build_provider(config)
     store_id = _resolve_store_id(args, config)
     if not store_id:
-        raise ProviderError(
-            "No store id provided. Use --store-id or set defaults with: "
-            "ica config set-store-id <id> or ica config set-store-ids <id1> <id2>"
-        )
+        favorite_result = provider.list_favorite_stores()
+        favorite_ids = _store_ids_from_search_result(favorite_result)
+        if favorite_ids:
+            store_id = favorite_ids[0]
+        else:
+            try:
+                stores_result = provider.search_stores(query=args.query)
+            except ProviderError as search_error:
+                raise ProviderError(
+                    "No store id provided and automatic fallback could not resolve one. "
+                    "Set with: ica config set-store-id <id> or pass --store-id. "
+                    f"Fallback error: {search_error}"
+                ) from search_error
+            fallback_ids = _store_ids_from_search_result(stores_result)
+            if not fallback_ids:
+                raise ProviderError(
+                    "No store id provided and no stores found for query fallback. "
+                    "Set with: ica config set-store-id <id> or pass --store-id."
+                )
+            store_id = fallback_ids[0]
+
     result = provider.search_products(store_id=store_id, query=args.query)
     return {
         "provider": config.provider,
@@ -1202,7 +1363,18 @@ def cmd_stores_search(args: argparse.Namespace, config: AppConfig) -> object:
                 "result": result,
             }
         except ProviderError as fallback_error:
-            if "requires legacy AuthenticationTicket" in str(fallback_error):
+            fallback_text = str(fallback_error).lower()
+            needs_legacy_bootstrap = any(
+                marker in fallback_text
+                for marker in [
+                    "requires legacy authenticationticket",
+                    "not authenticated",
+                    "no refresh token available",
+                    "missing oauth client credentials",
+                ]
+            )
+
+            if needs_legacy_bootstrap:
                 if sys.stdin.isatty():
                     password = getpass.getpass(
                         "ICA password (needed once for store-search fallback): "
@@ -1299,6 +1471,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--raw",
         action="store_true",
         help="Output raw API payload only",
+    )
+    output_group.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Output only success indicator",
+    )
+    output_group.add_argument(
+        "--short",
+        action="store_true",
+        help="Alias for --quiet",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1415,6 +1597,40 @@ def build_parser() -> argparse.ArgumentParser:
     list_items = list_sub.add_parser("items")
     list_items.add_argument("--list-name", "--list", dest="list_name")
     list_items.set_defaults(handler=cmd_list_items)
+
+    list_remove = list_sub.add_parser("remove")
+    list_remove.add_argument("item")
+    list_remove.add_argument("--list-name", "--list", dest="list_name")
+    list_remove.add_argument(
+        "--all",
+        action="store_true",
+        help="Remove all matching items with same name",
+    )
+    list_remove.set_defaults(handler=cmd_list_remove)
+
+    list_clear_striked = list_sub.add_parser("clear-struck")
+    list_clear_striked.add_argument("--list-name", "--list", dest="list_name")
+    list_clear_striked.set_defaults(handler=cmd_list_clear_striked)
+
+    list_strike = list_sub.add_parser("strike")
+    list_strike.add_argument("item")
+    list_strike.add_argument("--list-name", "--list", dest="list_name")
+    list_strike.add_argument(
+        "--all",
+        action="store_true",
+        help="Strike all matching items with same name",
+    )
+    list_strike.set_defaults(handler=cmd_list_strike)
+
+    list_unstrike = list_sub.add_parser("unstrike")
+    list_unstrike.add_argument("item")
+    list_unstrike.add_argument("--list-name", "--list", dest="list_name")
+    list_unstrike.add_argument(
+        "--all",
+        action="store_true",
+        help="Unstrike all matching items with same name",
+    )
+    list_unstrike.set_defaults(handler=cmd_list_unstrike)
 
     products_parser = subparsers.add_parser("products")
     products_sub = products_parser.add_subparsers(dest="products_cmd", required=True)

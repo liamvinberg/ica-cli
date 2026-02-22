@@ -5,6 +5,7 @@ from ica_cli.cli import (
     _format_human,
     _parse_callback_url,
     _resolve_list_add_items,
+    _store_ids_from_search_result,
     build_parser,
 )
 
@@ -68,6 +69,46 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.command, "list")
         self.assertEqual(args.list_cmd, "items")
         self.assertEqual(args.list_name, "Min lista")
+
+    def test_parser_accepts_list_remove(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            ["list", "remove", "mjolk", "--list-name", "Min lista", "--all"]
+        )
+        self.assertEqual(args.command, "list")
+        self.assertEqual(args.list_cmd, "remove")
+        self.assertEqual(args.item, "mjolk")
+        self.assertEqual(args.list_name, "Min lista")
+        self.assertTrue(args.all)
+
+    def test_parser_accepts_list_clear_struck(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["list", "clear-struck", "--list", "Min lista"])
+        self.assertEqual(args.command, "list")
+        self.assertEqual(args.list_cmd, "clear-struck")
+        self.assertEqual(args.list_name, "Min lista")
+
+    def test_parser_accepts_list_strike_and_unstrike(self) -> None:
+        parser = build_parser()
+        strike = parser.parse_args(["list", "strike", "brod", "--all"])
+        unstrike = parser.parse_args(["list", "unstrike", "brod", "--list", "Handla"])
+        self.assertEqual(strike.command, "list")
+        self.assertEqual(strike.list_cmd, "strike")
+        self.assertEqual(strike.item, "brod")
+        self.assertTrue(strike.all)
+        self.assertEqual(unstrike.command, "list")
+        self.assertEqual(unstrike.list_cmd, "unstrike")
+        self.assertEqual(unstrike.item, "brod")
+        self.assertEqual(unstrike.list_name, "Handla")
+
+    def test_parser_accepts_quiet_and_short_flags(self) -> None:
+        parser = build_parser()
+        args_quiet = parser.parse_args(["--quiet", "list", "ls"])
+        args_short = parser.parse_args(["--short", "list", "ls"])
+        self.assertTrue(args_quiet.quiet)
+        self.assertFalse(args_quiet.short)
+        self.assertTrue(args_short.short)
+        self.assertFalse(args_short.quiet)
 
     def test_parser_accepts_list_alias_for_list_name(self) -> None:
         parser = build_parser()
@@ -249,6 +290,23 @@ class CliParserTests(unittest.TestCase):
         raw = _extract_raw_payload(payload)
         self.assertEqual(raw, [{"OfferId": "1"}])
 
+    def test_store_ids_from_search_result_prefers_store_ids(self) -> None:
+        payload = {"store_ids": [1001, "1002", ""]}
+        self.assertEqual(_store_ids_from_search_result(payload), ["1001", "1002"])
+
+    def test_store_ids_from_search_result_falls_back_to_stores(self) -> None:
+        payload = {
+            "stores": [
+                {"id": 1004394},
+                {"Id": "1001234"},
+                {"id": ""},
+            ]
+        }
+        self.assertEqual(
+            _store_ids_from_search_result(payload),
+            ["1004394", "1001234"],
+        )
+
     def test_human_format_list_add(self) -> None:
         parser = build_parser()
         args = parser.parse_args(["list", "add", "mjolk", "--list-name", "Min lista"])
@@ -306,6 +364,38 @@ class CliParserTests(unittest.TestCase):
         self.assertIn('Items in "Min lista" (2):', text)
         self.assertIn("- [ ] mjolk", text)
         self.assertIn("- [x] brod", text)
+
+    def test_human_format_list_remove(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["list", "remove", "mjolk", "--list", "Min lista"])
+        payload = {
+            "list": "Min lista",
+            "item": "mjolk",
+            "removed": 1,
+        }
+        text = _format_human(payload, args)
+        self.assertEqual(text, 'Removed "mjolk" from "Min lista".')
+
+    def test_human_format_list_clear_struck(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["list", "clear-struck", "--list", "Min lista"])
+        payload = {
+            "list": "Min lista",
+            "removed": 2,
+        }
+        text = _format_human(payload, args)
+        self.assertEqual(text, 'Cleared 2 struck items from "Min lista".')
+
+    def test_human_format_list_strike(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["list", "strike", "brod", "--list", "Min lista"])
+        payload = {
+            "list": "Min lista",
+            "item": "brod",
+            "updated": 1,
+        }
+        text = _format_human(payload, args)
+        self.assertEqual(text, 'Striked "brod" in "Min lista".')
 
     def test_human_format_deals(self) -> None:
         parser = build_parser()
@@ -421,6 +511,22 @@ class CliParserTests(unittest.TestCase):
             "- ICA Kvantum Kungens Kurva (id: 1004394, city: NORSBORG)",
             text,
         )
+
+    def test_human_format_auth_current_begin(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["auth", "current-begin"])
+        payload = {
+            "ok": True,
+            "provider": "ica-current",
+            "username": "199001010000",
+            "authorize_url": "https://ims.icagruppen.se/oauth/v2/authorize?...",
+            "state": "abc",
+            "next": "Run: ica --json auth current-complete --callback-url '<full callback URL>'",
+        }
+        text = _format_human(payload, args)
+        self.assertIn("Current auth initialized. Open this URL", text)
+        self.assertIn("https://ims.icagruppen.se/oauth/v2/authorize?...", text)
+        self.assertIn("auth current-complete", text)
 
 
 if __name__ == "__main__":

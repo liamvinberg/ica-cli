@@ -27,6 +27,7 @@ uv run python -m unittest discover -s src -p "test_*.py"
 - Default: human-readable CLI output.
 - `--json`: full structured output.
 - `--raw`: raw API payload only (useful for scripts).
+- `--quiet` / `--short`: print only `ok` on success.
 
 Examples:
 
@@ -34,6 +35,7 @@ Examples:
 uv run ica config show
 uv run ica --json list ls
 uv run ica --raw list ls
+uv run ica --quiet list add mjolk --list "Handla"
 ```
 
 ## Quick start
@@ -145,6 +147,16 @@ uv run ica --json list items --list-name "Min lista"
 uv run ica --raw list items --list-name "Min lista"
 ```
 
+## Update or remove list items
+
+```bash
+uv run ica list remove "mjolk" --list "Min lista"
+uv run ica list remove "mjolk" --list "Min lista" --all
+uv run ica list strike "brod" --list "Min lista"
+uv run ica list unstrike "brod" --list "Min lista"
+uv run ica list clear-struck --list "Min lista"
+```
+
 ## Search products
 
 ```bash
@@ -155,6 +167,9 @@ uv run ica --json products search "ost"
 
 If multiple preferred stores are configured, the first one is used as default
 for commands that require one store ID.
+
+If no `--store-id` and no configured default exists, `products search` now tries
+to auto-resolve a store ID from favorites first, then from store search fallback.
 
 ## Search deals/offers
 

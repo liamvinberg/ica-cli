@@ -735,6 +735,320 @@ class IcaLegacyProvider(IcaProvider):
             return self._legacy_add_items(list_name, item_names, quantity)
         return self._fallback_add_items(list_name, item_names, quantity)
 
+    @staticmethod
+    def _row_id(row: dict[str, Any]) -> str | None:
+        for key in ("OfflineId", "id", "rowId", "RowId"):
+            value = row.get(key)
+            if isinstance(value, int):
+                return str(value)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    @staticmethod
+    def _row_name(row: dict[str, Any]) -> str:
+        value = row.get("ProductName") or row.get("text") or row.get("name")
+        if isinstance(value, str) and value:
+            return value
+        return "<unnamed item>"
+
+    @staticmethod
+    def _row_is_striked(row: dict[str, Any]) -> bool:
+        value = row.get("IsStrikedOver")
+        if isinstance(value, bool):
+            return value
+        value = row.get("isStriked")
+        if isinstance(value, bool):
+            return value
+        return False
+
+    def _resolve_list_with_rows(
+        self, list_name: str
+    ) -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
+        lists = self.list_lists()
+        if self.auth_ticket:
+            selected = next(
+                (item for item in lists if item.get("OfflineName") == list_name),
+                None,
+            )
+            if not selected:
+                raise ProviderError(
+                    f"List '{list_name}' not found in legacy API response. Existing lists: "
+                    + ", ".join(item.get("OfflineName", "?") for item in lists)
+                )
+            list_id = selected.get("OfflineId")
+            if not list_id:
+                raise ProviderError("Selected list has no OfflineId")
+            rows = selected.get("Rows")
+            if not isinstance(rows, list):
+                rows = []
+            return (
+                selected,
+                str(list_id),
+                [row for row in rows if isinstance(row, dict)],
+            )
+
+        selected = next((item for item in lists if item.get("name") == list_name), None)
+        if not selected:
+            raise ProviderError(
+                f"List '{list_name}' not found in fallback API response. Existing lists: "
+                + ", ".join(item.get("name", "?") for item in lists)
+            )
+        list_id = selected.get("id")
+        if not list_id:
+            raise ProviderError("Selected list has no id")
+        rows = selected.get("rows")
+        if not isinstance(rows, list):
+            rows = selected.get("Rows")
+        if not isinstance(rows, list):
+            rows = []
+        return selected, str(list_id), [row for row in rows if isinstance(row, dict)]
+
+    def _legacy_sync_mutation(
+        self, offline_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        auth_ticket = self.auth_ticket
+        if not auth_ticket:
+            raise ProviderError("Not authenticated")
+
+        req = request.Request(
+            f"{self.base_url}/user/offlineshoppinglists/{parse.quote(str(offline_id))}/sync",
+            headers={
+                "AuthenticationTicket": auth_ticket,
+                "Content-Type": "application/json",
+            },
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+        )
+        try:
+            with request.urlopen(req, timeout=20) as response:
+                raw = response.read().decode("utf-8")
+        except error.HTTPError as http_error:
+            raise ProviderError(
+                f"Legacy sync mutation failed: HTTP {http_error.code}"
+            ) from http_error
+        except error.URLError as url_error:
+            raise ProviderError(
+                f"Legacy sync mutation failed: {url_error.reason}"
+            ) from url_error
+
+        if not raw:
+            return {}
+        try:
+            payload_data = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(payload_data, dict):
+            return payload_data
+        return {}
+
+    def _fallback_request_json_or_empty(self, req: request.Request) -> Any:
+        try:
+            with request.urlopen(req, timeout=20) as response:
+                raw = response.read().decode("utf-8")
+        except error.HTTPError as http_error:
+            if http_error.code == 401 and self.refresh_token:
+                self.access_token = None
+                return None
+            body = http_error.read().decode("utf-8", errors="replace")
+            raise ProviderError(
+                f"Fallback row mutation failed: HTTP {http_error.code}: {body}"
+            ) from http_error
+        except error.URLError as url_error:
+            raise ProviderError(
+                f"Fallback row mutation failed: {url_error.reason}"
+            ) from url_error
+
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+
+    def _fallback_delete_row(self, list_id: str, row_id: str) -> None:
+        url = (
+            f"{self.digx_base_url}/shopping-list/v1/api/list/{parse.quote(str(list_id))}"
+            f"/row/{parse.quote(str(row_id))}"
+        )
+        req = request.Request(
+            url, headers=self._fallback_auth_headers(), method="DELETE"
+        )
+        payload = self._fallback_request_json_or_empty(req)
+        if payload is None:
+            req = request.Request(
+                url, headers=self._fallback_auth_headers(), method="DELETE"
+            )
+            payload = self._fallback_request_json_or_empty(req)
+        if payload is None:
+            raise ProviderError("Fallback delete row failed after retry")
+
+    def _fallback_set_row_striked(
+        self, list_id: str, row_id: str, striked: bool
+    ) -> Any:
+        url = (
+            f"{self.digx_base_url}/shopping-list/v1/api/list/{parse.quote(str(list_id))}"
+            f"/row/{parse.quote(str(row_id))}"
+        )
+        body = json.dumps({"isStriked": striked}).encode("utf-8")
+        errors_seen: list[str] = []
+        for method in ("PUT", "PATCH"):
+            req = request.Request(
+                url,
+                headers=self._fallback_auth_headers(),
+                data=body,
+                method=method,
+            )
+            try:
+                payload = self._fallback_request_json_or_empty(req)
+                if payload is None:
+                    req = request.Request(
+                        url,
+                        headers=self._fallback_auth_headers(),
+                        data=body,
+                        method=method,
+                    )
+                    payload = self._fallback_request_json_or_empty(req)
+                if payload is None:
+                    errors_seen.append(f"{method}: unauthorized after retry")
+                    continue
+                return payload
+            except ProviderError as error:
+                errors_seen.append(f"{method}: {error}")
+
+        raise ProviderError(
+            "Fallback strike update failed. Tried PUT/PATCH on row endpoint. "
+            + " | ".join(errors_seen)
+        )
+
+    def remove_item(
+        self,
+        list_name: str,
+        item_name: str,
+        all_matches: bool = False,
+    ) -> dict[str, Any]:
+        selected, list_id, rows = self._resolve_list_with_rows(list_name)
+        resolved_list_name = str(
+            selected.get("OfflineName") or selected.get("name") or list_name
+        )
+        needle = item_name.strip().lower()
+        matched = [row for row in rows if self._row_name(row).strip().lower() == needle]
+        if len(matched) == 0:
+            raise ProviderError(
+                f"Item '{item_name}' not found in list '{resolved_list_name}'"
+            )
+
+        target = matched if all_matches else matched[:1]
+        row_ids: list[str] = []
+        for row in target:
+            row_id = self._row_id(row)
+            if not row_id:
+                raise ProviderError(
+                    f"Matched item '{item_name}' has no row id; cannot delete"
+                )
+            row_ids.append(row_id)
+
+        if self.auth_ticket:
+            self._legacy_sync_mutation(list_id, {"DeletedRows": row_ids})
+        else:
+            for row_id in row_ids:
+                self._fallback_delete_row(list_id=list_id, row_id=row_id)
+
+        return {
+            "list": resolved_list_name,
+            "item": item_name,
+            "removed": len(row_ids),
+            "all_matches": all_matches,
+            "row_ids": row_ids,
+        }
+
+    def set_item_striked(
+        self,
+        list_name: str,
+        item_name: str,
+        striked: bool,
+        all_matches: bool = False,
+    ) -> dict[str, Any]:
+        selected, list_id, rows = self._resolve_list_with_rows(list_name)
+        resolved_list_name = str(
+            selected.get("OfflineName") or selected.get("name") or list_name
+        )
+        needle = item_name.strip().lower()
+        matched = [row for row in rows if self._row_name(row).strip().lower() == needle]
+        if len(matched) == 0:
+            raise ProviderError(
+                f"Item '{item_name}' not found in list '{resolved_list_name}'"
+            )
+
+        target = matched if all_matches else matched[:1]
+        row_ids: list[str] = []
+        for row in target:
+            row_id = self._row_id(row)
+            if not row_id:
+                raise ProviderError(
+                    f"Matched item '{item_name}' has no row id; cannot update strike state"
+                )
+            row_ids.append(row_id)
+
+        if self.auth_ticket:
+            changed_rows = [
+                {
+                    "OfflineId": row_id,
+                    "IsStrikedOver": striked,
+                    "SourceId": -1,
+                }
+                for row_id in row_ids
+            ]
+            self._legacy_sync_mutation(list_id, {"ChangedRows": changed_rows})
+        else:
+            for row_id in row_ids:
+                self._fallback_set_row_striked(
+                    list_id=list_id,
+                    row_id=row_id,
+                    striked=striked,
+                )
+
+        return {
+            "list": resolved_list_name,
+            "item": item_name,
+            "striked": striked,
+            "updated": len(row_ids),
+            "all_matches": all_matches,
+            "row_ids": row_ids,
+        }
+
+    def clear_striked(self, list_name: str) -> dict[str, Any]:
+        selected, list_id, rows = self._resolve_list_with_rows(list_name)
+        resolved_list_name = str(
+            selected.get("OfflineName") or selected.get("name") or list_name
+        )
+        row_ids = [
+            row_id
+            for row in rows
+            if self._row_is_striked(row)
+            for row_id in [self._row_id(row)]
+            if isinstance(row_id, str) and row_id
+        ]
+
+        if len(row_ids) == 0:
+            return {
+                "list": resolved_list_name,
+                "removed": 0,
+                "row_ids": [],
+            }
+
+        if self.auth_ticket:
+            self._legacy_sync_mutation(list_id, {"DeletedRows": row_ids})
+        else:
+            for row_id in row_ids:
+                self._fallback_delete_row(list_id=list_id, row_id=row_id)
+
+        return {
+            "list": resolved_list_name,
+            "removed": len(row_ids),
+            "row_ids": row_ids,
+        }
+
     def search_products(self, store_id: str, query: str) -> dict[str, Any]:
         url = (
             f"https://handlaprivatkund.ica.se/stores/{parse.quote(store_id)}/api/v5/products/search"
@@ -811,16 +1125,103 @@ class IcaLegacyProvider(IcaProvider):
         }
 
     def search_stores(self, query: str) -> dict[str, Any]:
-        auth_ticket = self.auth_ticket
-        if not auth_ticket:
-            raise ProviderError(
-                "Store search requires legacy AuthenticationTicket. "
-                "Run legacy login first: ica config set-provider ica-legacy && ica auth login"
-            )
-
         phrase = query.strip()
         if not phrase:
             raise ProviderError("Store search query cannot be empty")
+
+        if not self.auth_ticket:
+            headers = self._fallback_auth_headers()
+            ids: list[str] = []
+            search_error: str | None = None
+
+            req = request.Request(
+                f"https://apimgw-pub.ica.se/stores/search?Filters&Phrase={parse.quote(phrase)}",
+                headers=headers,
+                method="GET",
+            )
+            try:
+                with request.urlopen(req, timeout=20) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                if isinstance(payload, dict):
+                    raw_ids = payload.get("Stores")
+                    if isinstance(raw_ids, list):
+                        ids = [
+                            str(item).strip() for item in raw_ids if str(item).strip()
+                        ]
+            except (error.HTTPError, error.URLError) as endpoint_error:
+                search_error = str(endpoint_error)
+
+            stores = self._fallback_hydrate_stores_by_ids(ids, headers)
+            if len(stores) > 0:
+                return {
+                    "query": phrase,
+                    "source": "legacy-oauth-store-search",
+                    "store_ids": ids,
+                    "stores": stores,
+                }
+
+            favorites_ids: list[str] = []
+            favorites_req = request.Request(
+                "https://apimgw-pub.ica.se/sverige/digx/mobile/storeservice/v1/favorites",
+                headers=headers,
+                method="GET",
+            )
+            try:
+                with request.urlopen(favorites_req, timeout=20) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                if isinstance(payload, dict):
+                    raw_favorites = payload.get("favoriteStores")
+                    if isinstance(raw_favorites, list):
+                        favorites_ids = [
+                            str(item).strip()
+                            for item in raw_favorites
+                            if str(item).strip()
+                        ]
+            except (error.HTTPError, error.URLError):
+                favorites_ids = []
+
+            favorites = self._fallback_hydrate_stores_by_ids(favorites_ids, headers)
+            needle = phrase.lower()
+            filtered = [
+                store
+                for store in favorites
+                if needle
+                in " ".join(
+                    [
+                        str(store.get("marketingName", "")),
+                        str((store.get("address") or {}).get("city", ""))
+                        if isinstance(store.get("address"), dict)
+                        else "",
+                        str((store.get("address") or {}).get("street", ""))
+                        if isinstance(store.get("address"), dict)
+                        else "",
+                    ]
+                ).lower()
+            ]
+            if len(filtered) > 0:
+                return {
+                    "query": phrase,
+                    "source": "legacy-oauth-favorites-filter",
+                    "store_ids": [
+                        str(item.get("id"))
+                        for item in filtered
+                        if isinstance(item.get("id"), (int, str))
+                    ],
+                    "stores": filtered,
+                }
+
+            if search_error:
+                raise ProviderError(
+                    "Store search with legacy OAuth fallback returned no matches. "
+                    f"Store-search endpoint error: {search_error}"
+                )
+
+            raise ProviderError(
+                "Store search with legacy OAuth fallback returned no matches"
+            )
+
+        auth_ticket = self.auth_ticket
+        assert auth_ticket is not None
 
         search_req = request.Request(
             f"{self.base_url}/stores/search?Filters&Phrase={parse.quote(phrase)}",
@@ -870,16 +1271,35 @@ class IcaLegacyProvider(IcaProvider):
         }
 
     def get_store(self, store_id: str) -> dict[str, Any]:
-        auth_ticket = self.auth_ticket
-        if not auth_ticket:
-            raise ProviderError(
-                "Store lookup requires legacy AuthenticationTicket. "
-                "Run legacy login first: ica config set-provider ica-legacy && ica auth login"
-            )
-
         trimmed = store_id.strip()
         if not trimmed:
             raise ProviderError("Store id cannot be empty")
+
+        if not self.auth_ticket:
+            req = request.Request(
+                f"https://apimgw-pub.ica.se/sverige/digx/mobile/storeservice/v1/stores/{parse.quote(trimmed)}",
+                headers=self._fallback_auth_headers(),
+                method="GET",
+            )
+            try:
+                with request.urlopen(req, timeout=20) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            except error.HTTPError as http_error:
+                body = http_error.read().decode("utf-8", errors="replace")
+                raise ProviderError(
+                    f"Store fetch failed for id '{trimmed}': HTTP {http_error.code}: {body}"
+                ) from http_error
+            except error.URLError as url_error:
+                raise ProviderError(
+                    f"Store fetch failed for id '{trimmed}': {url_error.reason}"
+                ) from url_error
+
+            if not isinstance(payload, dict):
+                raise ProviderError("Unexpected store response format")
+            return payload
+
+        auth_ticket = self.auth_ticket
+        assert auth_ticket is not None
 
         req = request.Request(
             f"{self.base_url}/stores/{parse.quote(trimmed)}",
@@ -904,12 +1324,42 @@ class IcaLegacyProvider(IcaProvider):
         return payload
 
     def list_favorite_stores(self) -> dict[str, Any]:
-        auth_ticket = self.auth_ticket
-        if not auth_ticket:
-            raise ProviderError(
-                "Favorite stores require legacy AuthenticationTicket. "
-                "Run legacy login first: ica config set-provider ica-legacy && ica auth login"
+        if not self.auth_ticket:
+            req = request.Request(
+                "https://apimgw-pub.ica.se/sverige/digx/mobile/storeservice/v1/favorites",
+                headers=self._fallback_auth_headers(),
+                method="GET",
             )
+            try:
+                with request.urlopen(req, timeout=20) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            except error.HTTPError as http_error:
+                body = http_error.read().decode("utf-8", errors="replace")
+                raise ProviderError(
+                    f"Favorite stores fetch failed: HTTP {http_error.code}: {body}"
+                ) from http_error
+            except error.URLError as url_error:
+                raise ProviderError(
+                    f"Favorite stores fetch failed: {url_error.reason}"
+                ) from url_error
+
+            ids: list[str] = []
+            if isinstance(payload, dict):
+                raw_ids = payload.get("favoriteStores")
+                if isinstance(raw_ids, list):
+                    ids = [str(item).strip() for item in raw_ids if str(item).strip()]
+
+            stores = self._fallback_hydrate_stores_by_ids(
+                ids,
+                self._fallback_auth_headers(),
+            )
+            return {
+                "store_ids": ids,
+                "stores": stores,
+            }
+
+        auth_ticket = self.auth_ticket
+        assert auth_ticket is not None
 
         req = request.Request(
             f"{self.base_url}/user/stores",
@@ -947,3 +1397,24 @@ class IcaLegacyProvider(IcaProvider):
             "store_ids": ids,
             "stores": stores,
         }
+
+    def _fallback_hydrate_stores_by_ids(
+        self,
+        store_ids: list[str],
+        headers: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        stores: list[dict[str, Any]] = []
+        for store_id in store_ids:
+            req = request.Request(
+                f"https://apimgw-pub.ica.se/sverige/digx/mobile/storeservice/v1/stores/{parse.quote(store_id)}",
+                headers=headers,
+                method="GET",
+            )
+            try:
+                with request.urlopen(req, timeout=20) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            except (error.HTTPError, error.URLError):
+                continue
+            if isinstance(payload, dict):
+                stores.append(payload)
+        return stores

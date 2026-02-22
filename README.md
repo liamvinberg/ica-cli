@@ -123,6 +123,14 @@ uv run ica --json list add "mjolk"
 uv run ica --json list add "bananer" --list-name "Helg" --quantity 2
 ```
 
+## List items in a grocery list
+
+```bash
+uv run ica list items --list-name "Min lista"
+uv run ica --json list items --list-name "Min lista"
+uv run ica --raw list items --list-name "Min lista"
+```
+
 ## Search products
 
 ```bash

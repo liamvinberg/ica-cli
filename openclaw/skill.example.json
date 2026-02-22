@@ -13,6 +13,7 @@
     "auth_import_session": "ica --json auth session import --session-id \"{{session_id}}\"",
     "auth_import_token": "ica --json auth token import --access-token \"{{access_token}}\" --refresh-token \"{{refresh_token}}\"",
     "list_all": "ica --json list ls",
+    "list_items": "ica --json list items --list-name \"{{list_name}}\"",
     "add_item": "ica --json list add \"{{item}}\" --list-name \"{{list_name}}\"",
     "search_products": "ica --json products search \"{{query}}\" --store-id \"{{store_id}}\""
   }

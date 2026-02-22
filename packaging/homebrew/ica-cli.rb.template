@@ -1,0 +1,19 @@
+class IcaCli < Formula
+  include Language::Python::Virtualenv
+
+  desc "ICA grocery CLI for automation"
+  homepage "__HOMEPAGE__"
+  url "__URL__"
+  sha256 "__SHA256__"
+
+  depends_on "python@3.12"
+
+  def install
+    virtualenv_install_with_resources
+  end
+
+  test do
+    output = shell_output("#{bin}/ica --json config show")
+    assert_match "provider", output
+  end
+end

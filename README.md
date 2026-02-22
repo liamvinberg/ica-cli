@@ -55,6 +55,8 @@ uv run ica --json auth status
 uv run ica --json list ls
 ```
 
+If username is not configured, `auth login` prompts for it and stores it.
+
 Non-interactive completion:
 
 ```bash
@@ -64,9 +66,9 @@ uv run ica --json auth login --callback-url "https://www.ica.se/logga-in/sso/cal
 Agent-friendly mode (no prompts):
 
 ```bash
-uv run ica --json auth login --agentic
+uv run ica --json auth login --agentic --user "<personnummer-or-username>"
 # then complete with:
-uv run ica --json auth login --agentic --callback-url "https://www.ica.se/logga-in/sso/callback/?...&code=...&state=..."
+uv run ica --json auth login --agentic --user "<personnummer-or-username>" --callback-url "https://www.ica.se/logga-in/sso/callback/?...&code=...&state=..."
 ```
 
 If your shell command contains escaped separators (`\?`, `\&`, `\=`), `auth login --callback-url` normalizes them automatically.
@@ -99,6 +101,12 @@ Uses legacy login flow (`handla.api.ica.se/api/login`) with personnummer + passw
 uv run ica config set-provider ica-legacy
 uv run ica auth login
 uv run ica --json list ls
+```
+
+Non-interactive credentials:
+
+```bash
+uv run ica auth login --user "<personnummer>" --pass "<password>"
 ```
 
 Non-interactive login for automation:

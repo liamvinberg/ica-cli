@@ -21,5 +21,5 @@ Recommended runtime checks:
 
 For browser-driven auth handoff, use two-step agentic mode:
 
-1) `ica --json auth login --agentic` to get `authorize_url`
-2) `ica --json auth login --agentic --callback-url "..."` to complete and persist auth
+1) `ica --json auth login --agentic --user "<personnummer>"` to get `authorize_url`
+2) `ica --json auth login --agentic --user "<personnummer>" --callback-url "..."` to complete and persist auth

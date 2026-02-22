@@ -8,8 +8,8 @@
   },
   "commands": {
     "auth_status": "ica --json auth status",
-    "auth_login_agentic_start": "ica --json auth login --agentic",
-    "auth_login_agentic_complete": "ica --json auth login --agentic --callback-url \"{{callback_url}}\"",
+    "auth_login_agentic_start": "ica --json auth login --agentic --user \"{{user}}\"",
+    "auth_login_agentic_complete": "ica --json auth login --agentic --user \"{{user}}\" --callback-url \"{{callback_url}}\"",
     "auth_import_session": "ica --json auth session import --session-id \"{{session_id}}\"",
     "auth_import_token": "ica --json auth token import --access-token \"{{access_token}}\" --refresh-token \"{{refresh_token}}\"",
     "list_all": "ica --json list ls",

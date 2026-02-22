@@ -613,3 +613,118 @@ class IcaLegacyProvider(IcaProvider):
                 f"Product search failed for store {store_id}: {url_error.reason}"
             ) from url_error
         return payload
+
+    def search_deals(
+        self,
+        store_id: str,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        auth_ticket = self.auth_ticket
+        if not auth_ticket:
+            raise ProviderError(
+                "Deals search requires legacy AuthenticationTicket. "
+                "Run legacy login first: ica config set-provider ica-legacy && ica auth login"
+            )
+
+        req = request.Request(
+            f"{self.base_url}/offers?Stores={parse.quote(store_id)}",
+            headers={"AuthenticationTicket": auth_ticket},
+            method="GET",
+        )
+        try:
+            with request.urlopen(req, timeout=20) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except error.HTTPError as http_error:
+            raise ProviderError(
+                f"Deals retrieval failed for store {store_id}: HTTP {http_error.code}"
+            ) from http_error
+        except error.URLError as url_error:
+            raise ProviderError(
+                f"Deals retrieval failed for store {store_id}: {url_error.reason}"
+            ) from url_error
+
+        offers_raw = payload.get("Offers") if isinstance(payload, dict) else None
+        if not isinstance(offers_raw, list):
+            return {"offers": [], "store_id": store_id}
+
+        offers = [item for item in offers_raw if isinstance(item, dict)]
+        if query:
+            needle = query.strip().lower()
+            offers = [
+                item
+                for item in offers
+                if needle
+                in " ".join(
+                    [
+                        str(item.get("ProductName", "")),
+                        str(item.get("OfferTypeTitle", "")),
+                        str(item.get("OfferCondition", "")),
+                        str(item.get("SizeOrQuantity", "")),
+                    ]
+                ).lower()
+            ]
+
+        return {
+            "store_id": store_id,
+            "query": query,
+            "offers": offers,
+        }
+
+    def search_stores(self, query: str) -> dict[str, Any]:
+        auth_ticket = self.auth_ticket
+        if not auth_ticket:
+            raise ProviderError(
+                "Store search requires legacy AuthenticationTicket. "
+                "Run legacy login first: ica config set-provider ica-legacy && ica auth login"
+            )
+
+        phrase = query.strip()
+        if not phrase:
+            raise ProviderError("Store search query cannot be empty")
+
+        search_req = request.Request(
+            f"{self.base_url}/stores/search?Filters&Phrase={parse.quote(phrase)}",
+            headers={"AuthenticationTicket": auth_ticket},
+            method="GET",
+        )
+        try:
+            with request.urlopen(search_req, timeout=20) as response:
+                search_payload = json.loads(response.read().decode("utf-8"))
+        except error.HTTPError as http_error:
+            raise ProviderError(
+                f"Store search failed for query '{phrase}': HTTP {http_error.code}"
+            ) from http_error
+        except error.URLError as url_error:
+            raise ProviderError(
+                f"Store search failed for query '{phrase}': {url_error.reason}"
+            ) from url_error
+
+        ids_raw = (
+            search_payload.get("Stores") if isinstance(search_payload, dict) else None
+        )
+        if not isinstance(ids_raw, list):
+            return {"query": phrase, "stores": []}
+
+        stores: list[dict[str, Any]] = []
+        for candidate in ids_raw:
+            store_id = str(candidate).strip()
+            if not store_id:
+                continue
+            detail_req = request.Request(
+                f"{self.base_url}/stores/{parse.quote(store_id)}",
+                headers={"AuthenticationTicket": auth_ticket},
+                method="GET",
+            )
+            try:
+                with request.urlopen(detail_req, timeout=20) as response:
+                    detail_payload = json.loads(response.read().decode("utf-8"))
+            except (error.HTTPError, error.URLError):
+                continue
+            if isinstance(detail_payload, dict):
+                stores.append(detail_payload)
+
+        return {
+            "query": phrase,
+            "store_ids": [str(item).strip() for item in ids_raw if str(item).strip()],
+            "stores": stores,
+        }

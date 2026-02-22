@@ -344,3 +344,19 @@ class IcaCurrentProvider(IcaProvider):
                 f"Product search failed for store {store_id}: {url_error.reason}"
             ) from url_error
         return payload
+
+    def search_deals(
+        self,
+        store_id: str,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        raise ProviderError(
+            "Deals endpoint is not mapped for ica-current yet. "
+            "Use provider ica-legacy for offers: ica config set-provider ica-legacy"
+        )
+
+    def search_stores(self, query: str) -> dict[str, Any]:
+        raise ProviderError(
+            "Store search endpoint is mapped for ica-legacy only. "
+            "Use provider ica-legacy: ica config set-provider ica-legacy"
+        )

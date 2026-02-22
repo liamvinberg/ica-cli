@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,7 @@ from pathlib import Path
 APP_DIR = Path.home() / ".config" / "ica-cli"
 CONFIG_PATH = APP_DIR / "config.json"
 KEYCHAIN_SERVICE = "ica-cli"
+SECRETS_PATH = APP_DIR / "secrets.json"
 
 
 class ConfigError(RuntimeError):
@@ -62,7 +64,57 @@ def save_config(config: AppConfig) -> None:
     )
 
 
+def _can_use_macos_keychain() -> bool:
+    return os.uname().sysname == "Darwin"
+
+
+def _load_file_secrets() -> dict[str, str]:
+    if not SECRETS_PATH.exists():
+        return {}
+    try:
+        payload = json.loads(SECRETS_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        str(key): str(value)
+        for key, value in payload.items()
+        if isinstance(key, str) and isinstance(value, str)
+    }
+
+
+def _write_file_secrets(payload: dict[str, str]) -> None:
+    ensure_app_dir()
+    SECRETS_PATH.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    SECRETS_PATH.chmod(0o600)
+
+
+def _file_secret_set(account: str, value: str) -> None:
+    payload = _load_file_secrets()
+    payload[account] = value
+    _write_file_secrets(payload)
+
+
+def _file_secret_get(account: str) -> str | None:
+    return _load_file_secrets().get(account)
+
+
+def _file_secret_delete(account: str) -> None:
+    payload = _load_file_secrets()
+    if account in payload:
+        del payload[account]
+        _write_file_secrets(payload)
+
+
 def keychain_set(account: str, value: str) -> None:
+    if not _can_use_macos_keychain():
+        _file_secret_set(account, value)
+        return
+
     cmd = [
         "security",
         "add-generic-password",
@@ -74,14 +126,19 @@ def keychain_set(account: str, value: str) -> None:
         "-w",
         value,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        _file_secret_set(account, value)
+        return
     if result.returncode != 0:
-        raise ConfigError(
-            result.stderr.strip() or "Unable to store secret in macOS Keychain"
-        )
+        _file_secret_set(account, value)
 
 
 def keychain_get(account: str) -> str | None:
+    if not _can_use_macos_keychain():
+        return _file_secret_get(account)
+
     cmd = [
         "security",
         "find-generic-password",
@@ -91,12 +148,25 @@ def keychain_get(account: str) -> str | None:
         KEYCHAIN_SERVICE,
         "-w",
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        return _file_secret_get(account)
     if result.returncode != 0:
-        return None
+        return _file_secret_get(account)
     return result.stdout.strip()
 
 
 def keychain_delete(account: str) -> None:
+    if not _can_use_macos_keychain():
+        _file_secret_delete(account)
+        return
+
     cmd = ["security", "delete-generic-password", "-a", account, "-s", KEYCHAIN_SERVICE]
-    subprocess.run(cmd, capture_output=True, text=True, check=False)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        _file_secret_delete(account)
+        return
+    if result.returncode != 0:
+        _file_secret_delete(account)

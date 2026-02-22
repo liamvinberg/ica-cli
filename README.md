@@ -140,10 +140,38 @@ uv run ica config set-store-id "1004394"
 uv run ica --json products search "ost"
 ```
 
+## Search deals/offers
+
+Deals currently use the legacy offers endpoint (`handla.api.ica.se`) and require `ica-legacy` auth.
+
+```bash
+uv run ica config set-provider ica-legacy
+uv run ica auth login
+uv run ica deals search --store-id "1004394"
+uv run ica deals search "kaffe" --store-id "1004394"
+uv run ica --json deals search "kaffe" --store-id "1004394"
+uv run ica --raw deals search "kaffe" --store-id "1004394"
+```
+
+## Search stores by name
+
+Store search uses legacy ICA endpoints and returns store names with IDs so you can
+pick a store ID without manual lookup.
+
+```bash
+uv run ica config set-provider ica-legacy
+uv run ica auth login
+uv run ica stores search "stockholm"
+uv run ica --json stores search "stockholm"
+uv run ica --raw stores search "stockholm"
+```
+
 ## Secrets and storage
 
 - Configuration: `~/.config/ica-cli/config.json`
-- Sensitive values: macOS Keychain (`security` CLI)
+- Sensitive values:
+  - macOS: Keychain (`security` CLI)
+  - Linux/other environments (or when `security` is unavailable): `~/.config/ica-cli/secrets.json` (written with `0600` permissions)
   - `current-session:<username>` for `thSessionId`
   - `current-access-token:<username>` for OAuth access token
   - `current-refresh-token:<username>` for OAuth refresh token

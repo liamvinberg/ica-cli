@@ -42,6 +42,29 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.query, "ost")
         self.assertEqual(args.store_id, "1004394")
 
+    def test_parser_accepts_deals_search(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["deals", "search", "kaffe", "--store-id", "1004394"])
+        self.assertEqual(args.command, "deals")
+        self.assertEqual(args.deals_cmd, "search")
+        self.assertEqual(args.query, "kaffe")
+        self.assertEqual(args.store_id, "1004394")
+
+    def test_parser_accepts_deals_search_without_query(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["deals", "search", "--store-id", "1004394"])
+        self.assertEqual(args.command, "deals")
+        self.assertEqual(args.deals_cmd, "search")
+        self.assertIsNone(args.query)
+        self.assertEqual(args.store_id, "1004394")
+
+    def test_parser_accepts_stores_search(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["stores", "search", "stockholm"])
+        self.assertEqual(args.command, "stores")
+        self.assertEqual(args.stores_cmd, "search")
+        self.assertEqual(args.query, "stockholm")
+
     def test_parser_accepts_auth_login_current(self) -> None:
         parser = build_parser()
         args = parser.parse_args(
@@ -158,6 +181,11 @@ class CliParserTests(unittest.TestCase):
         raw = _extract_raw_payload(payload)
         self.assertEqual(raw, {"id": "r1"})
 
+    def test_extract_raw_payload_prefers_offers_field(self) -> None:
+        payload = {"offers": [{"OfferId": "1"}], "store_id": "1004394"}
+        raw = _extract_raw_payload(payload)
+        self.assertEqual(raw, [{"OfferId": "1"}])
+
     def test_human_format_list_add(self) -> None:
         parser = build_parser()
         args = parser.parse_args(["list", "add", "mjolk", "--list-name", "Min lista"])
@@ -196,6 +224,51 @@ class CliParserTests(unittest.TestCase):
         self.assertIn('Items in "Min lista" (2):', text)
         self.assertIn("- [ ] mjolk", text)
         self.assertIn("- [x] brod", text)
+
+    def test_human_format_deals(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["deals", "search", "kaffe", "--store-id", "1004394"])
+        payload = {
+            "provider": "ica-legacy",
+            "store_id": "1004394",
+            "query": "kaffe",
+            "result": {
+                "offers": [
+                    {"ProductName": "Bryggkaffe", "OfferCondition": "2 for 59 kr"},
+                    {"ProductName": "Espresso", "OfferCondition": "20% cheaper"},
+                ]
+            },
+        }
+        text = _format_human(payload, args)
+        self.assertIn('Deals for "kaffe" (2):', text)
+        self.assertIn("- Bryggkaffe (2 for 59 kr)", text)
+        self.assertIn("- Espresso (20% cheaper)", text)
+
+    def test_human_format_stores(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["stores", "search", "stockholm"])
+        payload = {
+            "provider": "ica-legacy",
+            "query": "stockholm",
+            "result": {
+                "stores": [
+                    {
+                        "Id": 658,
+                        "MarketingName": "ICA Supermarket Kupolen",
+                        "Address": {"City": "BORLANGE"},
+                    },
+                    {
+                        "Id": 603,
+                        "MarketingName": "ICA Nara Gagnefhallen",
+                        "Address": {"City": "GAGNEF"},
+                    },
+                ]
+            },
+        }
+        text = _format_human(payload, args)
+        self.assertIn('Stores for "stockholm" (2):', text)
+        self.assertIn("- ICA Supermarket Kupolen (id: 658, city: BORLANGE)", text)
+        self.assertIn("- ICA Nara Gagnefhallen (id: 603, city: GAGNEF)", text)
 
 
 if __name__ == "__main__":

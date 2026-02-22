@@ -28,3 +28,15 @@ class IcaProvider(ABC):
     @abstractmethod
     def search_products(self, store_id: str, query: str) -> dict[str, Any]:
         raise NotImplementedError
+
+    @abstractmethod
+    def search_deals(
+        self,
+        store_id: str,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def search_stores(self, query: str) -> dict[str, Any]:
+        raise NotImplementedError

@@ -128,6 +128,10 @@ def _extract_raw_payload(payload: object) -> object:
         return payload["lists"]
     if "items" in payload:
         return payload["items"]
+    if "stores" in payload:
+        return payload["stores"]
+    if "offers" in payload:
+        return payload["offers"]
     if "profile" in payload:
         return payload["profile"]
     return payload
@@ -321,6 +325,78 @@ def _format_human(payload: object, args: argparse.Namespace) -> str:
                     lines.append(f"- {name}")
                 if len(entries) > 10:
                     lines.append(f"...and {len(entries) - 10} more")
+                return "\n".join(lines)
+
+    if command == "deals" and isinstance(payload, dict):
+        result = payload.get("result")
+        query = payload.get("query")
+        if isinstance(result, dict):
+            offers = result.get("offers")
+            if isinstance(offers, list):
+                if len(offers) == 0:
+                    if isinstance(query, str) and query:
+                        return f'No deals found for "{query}".'
+                    return "No deals found."
+                header = (
+                    f'Deals for "{query}" ({len(offers)}):'
+                    if isinstance(query, str) and query
+                    else f"Deals ({len(offers)}):"
+                )
+                lines = [header]
+                for offer in offers[:15]:
+                    if not isinstance(offer, dict):
+                        continue
+                    name = offer.get("ProductName")
+                    if not isinstance(name, str) or not name:
+                        name = str(offer.get("OfferId", "<unknown offer>"))
+                    condition = offer.get("OfferCondition")
+                    if isinstance(condition, str) and condition:
+                        lines.append(f"- {name} ({condition})")
+                    else:
+                        lines.append(f"- {name}")
+                if len(offers) > 15:
+                    lines.append(f"...and {len(offers) - 15} more")
+                return "\n".join(lines)
+
+    if command == "stores" and isinstance(payload, dict):
+        result = payload.get("result")
+        query = payload.get("query", "")
+        if isinstance(result, dict):
+            stores = result.get("stores")
+            if isinstance(stores, list):
+                if len(stores) == 0:
+                    return f'No stores found for "{query}".'
+                lines = [f'Stores for "{query}" ({len(stores)}):']
+                for store in stores[:20]:
+                    if not isinstance(store, dict):
+                        continue
+                    store_id = store.get("Id")
+                    name = store.get("MarketingName")
+                    if not isinstance(name, str) or not name:
+                        name = store.get("StoreName")
+                    if not isinstance(name, str) or not name:
+                        name = "<unknown store>"
+
+                    city = None
+                    address = store.get("Address")
+                    if isinstance(address, dict):
+                        address_city = address.get("City")
+                        if isinstance(address_city, str) and address_city:
+                            city = address_city
+
+                    if isinstance(store_id, int):
+                        id_text = str(store_id)
+                    elif isinstance(store_id, str) and store_id:
+                        id_text = store_id
+                    else:
+                        id_text = "?"
+
+                    if city:
+                        lines.append(f"- {name} (id: {id_text}, city: {city})")
+                    else:
+                        lines.append(f"- {name} (id: {id_text})")
+                if len(stores) > 20:
+                    lines.append(f"...and {len(stores) - 20} more")
                 return "\n".join(lines)
 
     return json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True)
@@ -904,6 +980,32 @@ def cmd_products_search(args: argparse.Namespace, config: AppConfig) -> object:
     }
 
 
+def cmd_deals_search(args: argparse.Namespace, config: AppConfig) -> object:
+    provider = build_provider(config)
+    store_id = args.store_id or config.store_id
+    if not store_id:
+        raise ProviderError(
+            "No store id provided. Use --store-id or set default with: ica config set-store-id <id>"
+        )
+    result = provider.search_deals(store_id=store_id, query=args.query)
+    return {
+        "provider": config.provider,
+        "store_id": store_id,
+        "query": args.query,
+        "result": result,
+    }
+
+
+def cmd_stores_search(args: argparse.Namespace, config: AppConfig) -> object:
+    provider = build_provider(config)
+    result = provider.search_stores(query=args.query)
+    return {
+        "provider": config.provider,
+        "query": args.query,
+        "result": result,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ica",
@@ -1020,6 +1122,19 @@ def build_parser() -> argparse.ArgumentParser:
     products_search.add_argument("query")
     products_search.add_argument("--store-id")
     products_search.set_defaults(handler=cmd_products_search)
+
+    deals_parser = subparsers.add_parser("deals")
+    deals_sub = deals_parser.add_subparsers(dest="deals_cmd", required=True)
+    deals_search = deals_sub.add_parser("search")
+    deals_search.add_argument("query", nargs="?")
+    deals_search.add_argument("--store-id")
+    deals_search.set_defaults(handler=cmd_deals_search)
+
+    stores_parser = subparsers.add_parser("stores")
+    stores_sub = stores_parser.add_subparsers(dest="stores_cmd", required=True)
+    stores_search = stores_sub.add_parser("search")
+    stores_search.add_argument("query")
+    stores_search.set_defaults(handler=cmd_stores_search)
 
     return parser
 

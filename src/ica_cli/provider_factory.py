@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from ica_cli.config import AppConfig, keychain_get
 from ica_cli.providers import (
     IcaCurrentProvider,
@@ -17,8 +19,20 @@ def build_provider(config: AppConfig) -> IcaProvider:
         )
 
     if config.provider == "ica-current":
-        session_id = keychain_get(f"current-session:{username}")
-        return IcaCurrentProvider(session_id=session_id)
+        session_id = os.getenv("ICA_CURRENT_SESSION_ID") or keychain_get(
+            f"current-session:{username}"
+        )
+        access_token = os.getenv("ICA_CURRENT_ACCESS_TOKEN") or keychain_get(
+            f"current-access-token:{username}"
+        )
+        refresh_token = os.getenv("ICA_CURRENT_REFRESH_TOKEN") or keychain_get(
+            f"current-refresh-token:{username}"
+        )
+        return IcaCurrentProvider(
+            session_id=session_id,
+            access_token=access_token,
+            refresh_token=refresh_token,
+        )
 
     if config.provider == "ica-legacy":
         auth_ticket = keychain_get(f"legacy-auth-ticket:{username}")

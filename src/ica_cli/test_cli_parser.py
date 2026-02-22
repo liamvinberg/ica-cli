@@ -1,6 +1,6 @@
 import unittest
 
-from ica_cli.cli import build_parser
+from ica_cli.cli import _parse_callback_url, build_parser
 
 
 class CliParserTests(unittest.TestCase):
@@ -47,6 +47,55 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.session_id, "sess123")
         self.assertTrue(args.show_authorize_url)
         self.assertTrue(args.non_interactive)
+
+    def test_parser_accepts_auth_current_complete(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "auth",
+                "current-complete",
+                "--callback-url",
+                "https://www.ica.se/logga-in/sso/callback/?code=abc&state=def",
+            ]
+        )
+        self.assertEqual(args.command, "auth")
+        self.assertEqual(args.auth_cmd, "current-complete")
+        self.assertEqual(
+            args.callback_url,
+            "https://www.ica.se/logga-in/sso/callback/?code=abc&state=def",
+        )
+
+    def test_parser_accepts_auth_current_begin(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["auth", "current-begin"])
+        self.assertEqual(args.command, "auth")
+        self.assertEqual(args.auth_cmd, "current-begin")
+
+    def test_parser_accepts_auth_token_import(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "auth",
+                "token",
+                "import",
+                "--access-token",
+                "abc",
+                "--refresh-token",
+                "def",
+            ]
+        )
+        self.assertEqual(args.command, "auth")
+        self.assertEqual(args.auth_cmd, "token")
+        self.assertEqual(args.auth_token_cmd, "import")
+        self.assertEqual(args.access_token, "abc")
+        self.assertEqual(args.refresh_token, "def")
+
+    def test_parse_callback_url(self) -> None:
+        code, state = _parse_callback_url(
+            "https://www.ica.se/logga-in/sso/callback/?iss=x&code=abc123&state=st-1"
+        )
+        self.assertEqual(code, "abc123")
+        self.assertEqual(state, "st-1")
 
 
 if __name__ == "__main__":

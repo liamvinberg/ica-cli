@@ -5,8 +5,10 @@ import base64
 import getpass
 import hashlib
 import json
+import re
 import secrets
 import sys
+import webbrowser
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from ica_cli.config import (
@@ -75,8 +77,15 @@ def generate_oauth_scaffold() -> dict[str, str]:
     }
 
 
+def _normalize_callback_url(callback_url: str) -> str:
+    normalized = callback_url.strip().strip('"').strip("'")
+    normalized = re.sub(r"\\([?&=])", r"\1", normalized)
+    return normalized
+
+
 def _parse_callback_url(callback_url: str) -> tuple[str, str]:
-    parsed = urlparse(callback_url)
+    normalized = _normalize_callback_url(callback_url)
+    parsed = urlparse(normalized)
     query = parse_qs(parsed.query)
     code_values = query.get("code", [])
     state_values = query.get("state", [])
@@ -105,6 +114,109 @@ def _require_username(config: AppConfig) -> str:
             "No username configured. Run: ica config set-username <value>"
         )
     return config.username
+
+
+def _store_current_auth(
+    username: str,
+    session_id: str | None = None,
+    access_token: str | None = None,
+    refresh_token: str | None = None,
+) -> None:
+    if session_id:
+        keychain_set(_kc_current_session(username), session_id)
+    if access_token:
+        keychain_set(_kc_current_access(username), access_token)
+    if refresh_token:
+        keychain_set(_kc_current_refresh(username), refresh_token)
+
+
+def _ensure_current_provider(config: AppConfig) -> None:
+    if config.provider != "ica-current":
+        config.provider = "ica-current"
+        save_config(config)
+
+
+def _complete_current_auth_from_callback(
+    username: str,
+    callback_url: str,
+    allow_state_mismatch: bool,
+    code_verifier: str | None,
+) -> dict[str, object]:
+    normalized_callback = _normalize_callback_url(callback_url)
+    code, state = _parse_callback_url(normalized_callback)
+
+    provider = IcaCurrentProvider()
+    callback_session_error: str | None = None
+    try:
+        session_id = provider.bootstrap_session_from_callback(normalized_callback)
+        access_token = provider.refresh_access_token()
+        _store_current_auth(username, session_id=session_id, access_token=access_token)
+        keychain_delete(_kc_current_pkce_verifier(username))
+        keychain_delete(_kc_current_pkce_state(username))
+        return {
+            "ok": True,
+            "provider": "ica-current",
+            "username": username,
+            "method": "callback-session",
+            "access_token_length": len(access_token),
+        }
+    except ProviderError as error:
+        callback_session_error = str(error)
+
+    expected_state = keychain_get(_kc_current_pkce_state(username))
+    if expected_state and state != expected_state and not allow_state_mismatch:
+        raise ProviderError(
+            "State mismatch. Run auth current-begin again, then retry with fresh callback URL. "
+            "Use --allow-state-mismatch only if you intentionally bypass this check."
+        )
+
+    verifier = code_verifier or keychain_get(_kc_current_pkce_verifier(username))
+    if not verifier:
+        raise ProviderError(
+            "ICA callback did not yield a session cookie and no code_verifier is available for code exchange. "
+            f"Callback session error: {callback_session_error}"
+        )
+
+    try:
+        token_payload = provider.exchange_authorization_code(
+            code=code,
+            code_verifier=verifier,
+            state=state,
+        )
+    except ProviderError as code_error:
+        raise ProviderError(
+            "ICA callback completion failed. "
+            f"Session bootstrap error: {callback_session_error}. "
+            f"Authorization-code exchange error: {code_error}. "
+            "This usually means the callback code was already consumed in browser. "
+            "Use auth session import with thSessionId or run auth login and complete immediately."
+        ) from code_error
+    access_token = token_payload.get("access_token")
+    if not isinstance(access_token, str) or not access_token:
+        raise ProviderError(
+            "Token response did not include access_token. "
+            f"Callback session error: {callback_session_error}"
+        )
+
+    refresh_token = token_payload.get("refresh_token")
+    if isinstance(refresh_token, str) and refresh_token:
+        _store_current_auth(
+            username, access_token=access_token, refresh_token=refresh_token
+        )
+    else:
+        _store_current_auth(username, access_token=access_token)
+
+    keychain_delete(_kc_current_pkce_verifier(username))
+    keychain_delete(_kc_current_pkce_state(username))
+
+    return {
+        "ok": True,
+        "provider": "ica-current",
+        "username": username,
+        "method": "authorization-code",
+        "has_refresh_token": isinstance(refresh_token, str) and bool(refresh_token),
+        "token_type": token_payload.get("token_type", "Bearer"),
+    }
 
 
 def cmd_config_set_provider(args: argparse.Namespace, config: AppConfig) -> object:
@@ -142,46 +254,133 @@ def cmd_config_set_store_id(args: argparse.Namespace, config: AppConfig) -> obje
 
 def cmd_auth_login(args: argparse.Namespace, config: AppConfig) -> object:
     username = _require_username(config)
-    if args.password_stdin:
-        password = sys.stdin.read().strip()
-    else:
-        password = getpass.getpass("ICA password: ")
-    if not password:
-        raise ProviderError("Password is required")
+    if config.provider == "ica-legacy":
+        if args.password_stdin:
+            password = sys.stdin.read().strip()
+        else:
+            password = getpass.getpass("ICA password: ")
+        if not password:
+            raise ProviderError("Password is required")
 
-    if config.provider != "ica-legacy":
+        provider = IcaLegacyProvider()
+        login_result = provider.login(username=username, password=password)
+        keychain_set(f"legacy-auth-ticket:{username}", login_result["auth_ticket"])
+        return {
+            "ok": True,
+            "provider": "ica-legacy",
+            "profile": login_result.get("profile", {}),
+        }
+
+    if args.callback_url:
+        result = _complete_current_auth_from_callback(
+            username=username,
+            callback_url=args.callback_url,
+            allow_state_mismatch=args.allow_state_mismatch,
+            code_verifier=args.code_verifier,
+        )
+        _ensure_current_provider(config)
+        return result
+
+    if args.session_id:
+        provider = IcaCurrentProvider(session_id=args.session_id)
+        access_token = provider.refresh_access_token()
+        _store_current_auth(
+            username=username,
+            session_id=args.session_id,
+            access_token=access_token,
+        )
+        _ensure_current_provider(config)
+        return {
+            "ok": True,
+            "provider": "ica-current",
+            "username": username,
+            "method": "session-id",
+            "access_token_length": len(access_token),
+        }
+
+    scaffold = generate_oauth_scaffold()
+    keychain_set(_kc_current_pkce_verifier(username), scaffold["code_verifier"])
+    keychain_set(_kc_current_pkce_state(username), scaffold["state"])
+
+    if args.agentic:
+        return {
+            "ok": True,
+            "provider": "ica-current",
+            "username": username,
+            "mode": "agentic",
+            "authorize_url": scaffold["authorize_url"],
+            "next": "Run: ica --json auth login --agentic --callback-url '<full callback URL>'",
+        }
+
+    if args.non_interactive:
         raise ProviderError(
-            "Password login is only available for ica-legacy. "
-            "For ica-current, import thSessionId with: ica auth session import --session-id <value>"
+            "Non-interactive mode requires --callback-url or --session-id for ica-current."
         )
 
-    provider = IcaLegacyProvider()
-    login_result = provider.login(username=username, password=password)
-    keychain_set(f"legacy-auth-ticket:{username}", login_result["auth_ticket"])
-    return {
-        "ok": True,
-        "provider": "ica-legacy",
-        "profile": login_result.get("profile", {}),
-    }
+    if not args.no_open_browser:
+        input("Press Enter to open ICA login in your browser...")
+        opened = webbrowser.open(scaffold["authorize_url"])
+        if not opened:
+            print("Could not open browser automatically. Open this URL manually:")
+            print(scaffold["authorize_url"])
+    else:
+        print("Open this URL in your browser and complete ICA login:")
+        print(scaffold["authorize_url"])
+
+    callback_url = input("Paste full callback URL: ").strip()
+    if not callback_url:
+        raise ProviderError("No callback URL provided")
+
+    try:
+        result = _complete_current_auth_from_callback(
+            username=username,
+            callback_url=callback_url,
+            allow_state_mismatch=args.allow_state_mismatch,
+            code_verifier=args.code_verifier,
+        )
+        _ensure_current_provider(config)
+        return result
+    except ProviderError as callback_error:
+        if "invalid_client" not in str(callback_error):
+            raise
+        print(
+            "Callback code appears consumed by browser. You can finish login by pasting thSessionId."
+        )
+        session_id = input("Paste thSessionId (leave empty to abort): ").strip()
+        if not session_id:
+            raise
+        provider = IcaCurrentProvider(session_id=session_id)
+        access_token = provider.refresh_access_token()
+        _store_current_auth(
+            username=username,
+            session_id=session_id,
+            access_token=access_token,
+        )
+        _ensure_current_provider(config)
+        return {
+            "ok": True,
+            "provider": "ica-current",
+            "username": username,
+            "method": "session-id-fallback",
+            "access_token_length": len(access_token),
+        }
 
 
 def cmd_auth_session_import(args: argparse.Namespace, config: AppConfig) -> object:
     username = _require_username(config)
-    keychain_set(_kc_current_session(username), args.session_id)
-    if config.provider != "ica-current":
-        config.provider = "ica-current"
-        save_config(config)
+    _store_current_auth(username=username, session_id=args.session_id)
+    _ensure_current_provider(config)
     return {"ok": True, "provider": "ica-current", "username": username}
 
 
 def cmd_auth_token_import(args: argparse.Namespace, config: AppConfig) -> object:
     username = _require_username(config)
-    keychain_set(_kc_current_access(username), args.access_token)
-    if args.refresh_token:
-        keychain_set(_kc_current_refresh(username), args.refresh_token)
-    if config.provider != "ica-current":
-        config.provider = "ica-current"
-        save_config(config)
+    _store_current_auth(
+        username=username,
+        access_token=args.access_token,
+        refresh_token=args.refresh_token,
+    )
+    _ensure_current_provider(config)
     return {
         "ok": True,
         "provider": "ica-current",
@@ -207,19 +406,22 @@ def cmd_auth_current_begin(_: argparse.Namespace, config: AppConfig) -> object:
 
 def cmd_auth_current_complete(args: argparse.Namespace, config: AppConfig) -> object:
     username = _require_username(config)
+    if args.callback_url:
+        result = _complete_current_auth_from_callback(
+            username=username,
+            callback_url=args.callback_url,
+            allow_state_mismatch=args.allow_state_mismatch,
+            code_verifier=args.code_verifier,
+        )
+        _ensure_current_provider(config)
+        return result
 
-    callback_url = args.callback_url
     code = args.code
     state = args.state
-
-    if callback_url:
-        code, state = _parse_callback_url(callback_url)
-
     if not code:
         raise ProviderError(
             "No authorization code found. Provide --callback-url or --code"
         )
-
     if not state:
         raise ProviderError("No state found. Provide --callback-url or --state")
 
@@ -246,65 +448,40 @@ def cmd_auth_current_complete(args: argparse.Namespace, config: AppConfig) -> ob
     )
     access_token = token_payload.get("access_token")
     if not isinstance(access_token, str) or not access_token:
-        raise ProviderError(
-            "Token response did not include access_token. Current login flow may require session-cookie fallback."
-        )
+        raise ProviderError("Token response did not include access_token")
 
     refresh_token = token_payload.get("refresh_token")
-    if isinstance(refresh_token, str) and refresh_token:
-        keychain_set(_kc_current_refresh(username), refresh_token)
-
-    keychain_set(_kc_current_access(username), access_token)
+    _store_current_auth(
+        username=username,
+        access_token=access_token,
+        refresh_token=refresh_token if isinstance(refresh_token, str) else None,
+    )
     keychain_delete(_kc_current_pkce_verifier(username))
     keychain_delete(_kc_current_pkce_state(username))
-
-    if config.provider != "ica-current":
-        config.provider = "ica-current"
-        save_config(config)
+    _ensure_current_provider(config)
 
     return {
         "ok": True,
         "provider": "ica-current",
         "username": username,
+        "method": "authorization-code",
         "has_refresh_token": isinstance(refresh_token, str) and bool(refresh_token),
         "token_type": token_payload.get("token_type", "Bearer"),
     }
 
 
 def cmd_auth_login_current(args: argparse.Namespace, config: AppConfig) -> object:
-    username = _require_username(config)
-    scaffold = generate_oauth_scaffold()
-    session_id = args.session_id
-
-    if not session_id:
-        if args.non_interactive:
-            raise ProviderError(
-                "No session id provided. Pass --session-id in non-interactive mode."
-            )
-        print("Open this URL in your browser and complete ICA login:")
-        print(scaffold["authorize_url"])
-        session_id = input("Paste thSessionId: ").strip()
-
-    if not session_id:
-        raise ProviderError("No thSessionId provided")
-
-    provider = IcaCurrentProvider(session_id=session_id)
-    access_token = provider.refresh_access_token()
-    keychain_set(_kc_current_session(username), session_id)
-    keychain_set(_kc_current_access(username), access_token)
-    if config.provider != "ica-current":
-        config.provider = "ica-current"
-        save_config(config)
-
-    result = {
-        "ok": True,
-        "provider": "ica-current",
-        "username": username,
-        "access_token_length": len(access_token),
-    }
-    if args.show_authorize_url:
-        result["authorize_url"] = scaffold["authorize_url"]
-    return result
+    alias_args = argparse.Namespace(
+        password_stdin=False,
+        callback_url=None,
+        session_id=args.session_id,
+        code_verifier=None,
+        allow_state_mismatch=False,
+        agentic=args.show_authorize_url,
+        non_interactive=args.non_interactive,
+        no_open_browser=False,
+    )
+    return cmd_auth_login(alias_args, config)
 
 
 def cmd_auth_logout(_: argparse.Namespace, config: AppConfig) -> object:
@@ -405,6 +582,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     auth_login = auth_sub.add_parser("login")
     auth_login.add_argument("--password-stdin", action="store_true")
+    auth_login.add_argument("--callback-url")
+    auth_login.add_argument("--session-id")
+    auth_login.add_argument("--code-verifier")
+    auth_login.add_argument("--allow-state-mismatch", action="store_true")
+    auth_login.add_argument("--agentic", action="store_true")
+    auth_login.add_argument("--non-interactive", action="store_true")
+    auth_login.add_argument("--no-open-browser", action="store_true")
     auth_login.set_defaults(handler=cmd_auth_login)
 
     auth_token = auth_sub.add_parser("token")

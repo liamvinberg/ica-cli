@@ -90,9 +90,37 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.access_token, "abc")
         self.assertEqual(args.refresh_token, "def")
 
+    def test_parser_accepts_auth_login_agentic(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "auth",
+                "login",
+                "--agentic",
+                "--callback-url",
+                "https://www.ica.se/logga-in/sso/callback/?code=abc&state=def",
+                "--allow-state-mismatch",
+            ]
+        )
+        self.assertEqual(args.command, "auth")
+        self.assertEqual(args.auth_cmd, "login")
+        self.assertTrue(args.agentic)
+        self.assertTrue(args.allow_state_mismatch)
+        self.assertEqual(
+            args.callback_url,
+            "https://www.ica.se/logga-in/sso/callback/?code=abc&state=def",
+        )
+
     def test_parse_callback_url(self) -> None:
         code, state = _parse_callback_url(
             "https://www.ica.se/logga-in/sso/callback/?iss=x&code=abc123&state=st-1"
+        )
+        self.assertEqual(code, "abc123")
+        self.assertEqual(state, "st-1")
+
+    def test_parse_callback_url_with_shell_escapes(self) -> None:
+        code, state = _parse_callback_url(
+            "https://www.ica.se/logga-in/sso/callback/\\?iss\\=x\\&code\\=abc123\\&state\\=st-1"
         )
         self.assertEqual(code, "abc123")
         self.assertEqual(state, "st-1")

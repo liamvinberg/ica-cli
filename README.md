@@ -32,17 +32,36 @@ uv run ica config set-provider ica-current
 
 ### `ica-current` (recommended)
 
-Supports two paths:
+Default smooth flow:
 
-- OAuth callback flow (preferred)
-- Session cookie import (`thSessionId`) fallback
+```bash
+uv run ica auth login
+# Press Enter, complete ICA login in browser, paste callback URL
+uv run ica --json auth status
+uv run ica --json list ls
+```
+
+Non-interactive completion:
+
+```bash
+uv run ica --json auth login --callback-url "https://www.ica.se/logga-in/sso/callback/?...&code=...&state=..."
+```
+
+Agent-friendly mode (no prompts):
+
+```bash
+uv run ica --json auth login --agentic
+# then complete with:
+uv run ica --json auth login --agentic --callback-url "https://www.ica.se/logga-in/sso/callback/?...&code=...&state=..."
+```
+
+If your shell command contains escaped separators (`\?`, `\&`, `\=`), `auth login --callback-url` normalizes them automatically.
+
+Advanced manual flow is still available:
 
 ```bash
 uv run ica --json auth current-begin
-# Open authorize_url, complete login, copy full callback URL from browser
 uv run ica --json auth current-complete --callback-url "https://www.ica.se/logga-in/sso/callback/?...&code=...&state=..."
-uv run ica --json auth status
-uv run ica --json list ls
 ```
 
 Fallback if OAuth completion does not return tokens:

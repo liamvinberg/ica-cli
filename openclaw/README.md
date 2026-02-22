@@ -18,3 +18,8 @@ Recommended runtime checks:
 1) Call `ica --json auth status` before list operations.
 2) Retry once on transient network failures.
 3) Keep list names explicit for deterministic behavior.
+
+For browser-driven auth handoff, use two-step agentic mode:
+
+1) `ica --json auth login --agentic` to get `authorize_url`
+2) `ica --json auth login --agentic --callback-url "..."` to complete and persist auth
